@@ -1,13 +1,85 @@
 const puppeteer = require('puppeteer');
 const axios = require('axios');
-const Solver = require('2captcha-typescript').Solver;
+const fs = require('fs');
+const path = require('path');
 
 const ENERGA_EMAIL = process.env.ENERGA_EMAIL;
 const ENERGA_PASSWORD = process.env.ENERGA_PASSWORD;
 const GOOGLE_SHEETS_WEBHOOK = process.env.GOOGLE_SHEETS_WEBHOOK;
 const TWO_CAPTCHA_API_KEY = process.env.TWO_CAPTCHA_API_KEY;
 
-const solver = new Solver(TWO_CAPTCHA_API_KEY);
+async function solveCaptchaWith2Captcha(sitekey, pageUrl) {
+  console.log('🔐 Wysyłam CAPTCHA do 2Captcha...');
+  
+  try {
+    // Krok 1: Wyślij CAPTCHA
+    const uploadResponse = await axios.post(
+      'http://2captcha.com/in.php',
+      {
+        method: 'userrecaptcha',
+        googlekey: sitekey,
+        pageurl: pageUrl,
+        json: 1
+      },
+      {
+        params: {
+          apikey: TWO_CAPTCHA_API_KEY
+        }
+      }
+    );
+    
+    if (uploadResponse.data.status !== 0) {
+      throw new Error(`Błąd wysyłania: ${uploadResponse.data.error}`);
+    }
+    
+    const captchaId = uploadResponse.data.captcha;
+    console.log(`📤 CAPTCHA wysłana (ID: ${captchaId})`);
+    
+    // Krok 2: Czekaj na rozwiązanie
+    console.log('⏳ Czekanie na rozwiązanie (max 60 sekund)...');
+    
+    let solution = null;
+    let attempts = 0;
+    const maxAttempts = 60;
+    
+    while (!solution && attempts < maxAttempts) {
+      await new Promise(resolve => setTimeout(resolve, 1000));
+      attempts++;
+      
+      const resultResponse = await axios.get(
+        'http://2captcha.com/res.php',
+        {
+          params: {
+            apikey: TWO_CAPTCHA_API_KEY,
+            action: 'get',
+            id: captchaId,
+            json: 1
+          }
+        }
+      );
+      
+      if (resultResponse.data.status === 1) {
+        solution = resultResponse.data.request;
+        console.log('✅ CAPTCHA rozwiązana!');
+      } else if (resultResponse.data.status === 0) {
+        // Jeszcze nie gotowe
+        process.stdout.write('.');
+      } else {
+        throw new Error(`Błąd: ${resultResponse.data.error}`);
+      }
+    }
+    
+    if (!solution) {
+      throw new Error('Timeout: CAPTCHA nie została rozwiązana w 60 sekund');
+    }
+    
+    return solution;
+    
+  } catch (error) {
+    console.error('❌ Błąd 2Captcha:', error.message);
+    throw error;
+  }
+}
 
 async function getRefreshToken() {
   console.log('🚀 Rozpoczynanie logowania do Energi...');
@@ -28,7 +100,7 @@ async function getRefreshToken() {
     const page = await browser.newPage();
     await page.setViewport({ width: 1280, height: 720 });
     
-    // Intercept responses z tokenu
+    // Monitoruj responses
     page.on('response', async (response) => {
       try {
         const url = response.url();
@@ -63,53 +135,47 @@ async function getRefreshToken() {
     
     // Sprawdź reCAPTCHA
     console.log('🔍 Szukanie reCAPTCHA...');
-    const recaptchaFrame = await page.$('iframe[src*="recaptcha"]');
+    const hasCaptcha = await page.$('iframe[src*="recaptcha"]') !== null;
     
-    if (recaptchaFrame) {
-      console.log('🤖 Znaleziono reCAPTCHA - rozwiązuję...');
+    if (hasCaptcha) {
+      console.log('🤖 Znaleziono reCAPTCHA');
       
       // Pobierz sitekey
       const sitekey = await page.evaluate(() => {
-        const frame = document.querySelector('iframe[src*="recaptcha"]');
-        const src = frame.src;
-        const match = src.match(/k=([^&]+)/);
-        return match ? match[1] : null;
+        const script = Array.from(document.scripts).find(s => 
+          s.textContent.includes('grecaptcha.render')
+        );
+        if (script) {
+          const match = script.textContent.match(/sitekey['":\s]+['"]([^'"]+)['"]/);
+          return match ? match[1] : null;
+        }
+        return null;
       });
       
       if (sitekey) {
-        try {
-          console.log('🔐 Wysyłam CAPTCHA do 2captcha...');
-          const res = await solver.recaptchaV2(
-            sitekey,
-            'https://24.energa.pl/'
-          );
-          
-          console.log('✅ CAPTCHA rozwiązana!');
-          console.log(`🔑 Token CAPTCHA: ${res.data.substring(0, 30)}...`);
-          
-          // Wklej token do g-recaptcha-response
-          await page.evaluate((token) => {
-            document.getElementById('g-recaptcha-response').innerHTML = token;
-          }, res.data);
-          
-          // Trigger callback
-          await page.evaluate(() => {
-            if (window.___grecaptcha_cfg) {
-              Object.entries(window.___grecaptcha_cfg.clients).forEach(([key, client]) => {
-                if (client.callback) {
-                  client.callback(document.getElementById('g-recaptcha-response').value);
-                }
-              });
-            }
-          });
-          
-        } catch (error) {
-          console.error('❌ Błąd 2captcha:', error.message);
-          throw error;
-        }
+        console.log(`🔑 Sitekey: ${sitekey.substring(0, 20)}...`);
+        
+        // Rozwiąż CAPTCHA
+        const captchaSolution = await solveCaptchaWith2Captcha(sitekey, 'https://24.energa.pl/');
+        
+        // Wklej do strony
+        await page.evaluate((token) => {
+          document.getElementById('g-recaptcha-response').innerHTML = token;
+          if (window.___grecaptcha_cfg) {
+            Object.entries(window.___grecaptcha_cfg.clients).forEach(([key, client]) => {
+              if (client.callback) {
+                client.callback(token);
+              }
+            });
+          }
+        }, captchaSolution);
+        
+        console.log('✅ CAPTCHA wklęta');
+      } else {
+        console.log('⚠️ Nie znaleziono sitekey');
       }
     } else {
-      console.log('✅ Brak reCAPTCHA - idę dalej');
+      console.log('✅ Brak reCAPTCHA');
     }
     
     // Kliknij login
