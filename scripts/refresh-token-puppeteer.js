@@ -106,7 +106,7 @@ async function getRefreshToken() {
             console.log('Znaleziono response z tokenami');
             if (data.refresh_token) {
               refreshToken = data.refresh_token;
-              console.log('Znaleziono refresh_token!');
+              console.log('Znaleziono refresh_token w response!');
             }
           } catch (e) {
             // Text response
@@ -241,24 +241,126 @@ async function getRefreshToken() {
     }
     
     // Czekaj na dashboard
+    console.log('Czekanie na zaladowanie dashboard...');
     await new Promise(resolve => setTimeout(resolve, 3000));
     
-    // Czekaj na refresh_token
-    console.log('Czekanie na refresh_token (max 15 sekund)...');
-    let waited = 0;
-    while (!refreshToken && waited < 15000) {
-      await new Promise(resolve => setTimeout(resolve, 1000));
-      waited += 1000;
-      process.stdout.write('.');
+    // Sprawdzenie localStorage
+    console.log('Sprawdzanie localStorage...');
+    try {
+      const storageToken = await page.evaluate(() => {
+        // Wydrukuj wszystkie klucze
+        const keys = [];
+        for (let i = 0; i < localStorage.length; i++) {
+          keys.push(localStorage.key(i));
+        }
+        console.log('Klucze localStorage: ' + keys.join(', '));
+        
+        // Szukaj tokenu
+        for (let i = 0; i < localStorage.length; i++) {
+          const key = localStorage.key(i);
+          const value = localStorage.getItem(key);
+          
+          if (key.includes('token') || key.includes('auth') || key.includes('oidc') || key.includes('keycloak')) {
+            console.log('Znaleziono klucz: ' + key);
+            
+            try {
+              const parsed = JSON.parse(value);
+              if (parsed.refresh_token) {
+                console.log('Znaleziono refresh_token w: ' + key);
+                return parsed.refresh_token;
+              }
+            } catch (e) {
+              // Sprawdź czy sam token jest stringiem
+              if (typeof value === 'string' && value.includes('eyJ')) {
+                console.log('Znaleziono JWT w: ' + key);
+              }
+            }
+          }
+        }
+        return null;
+      });
+      
+      if (storageToken) {
+        refreshToken = storageToken;
+        console.log('Znaleziono refresh_token w localStorage!');
+      }
+    } catch (e) {
+      console.log('Nie mozna odczytac localStorage: ' + e.message);
     }
-    console.log('');
+    
+    // Sprawdzenie sessionStorage
+    if (!refreshToken) {
+      console.log('Sprawdzanie sessionStorage...');
+      try {
+        const storageToken = await page.evaluate(() => {
+          // Wydrukuj wszystkie klucze
+          const keys = [];
+          for (let i = 0; i < sessionStorage.length; i++) {
+            keys.push(sessionStorage.key(i));
+          }
+          console.log('Klucze sessionStorage: ' + keys.join(', '));
+          
+          // Szukaj tokenu
+          for (let i = 0; i < sessionStorage.length; i++) {
+            const key = sessionStorage.key(i);
+            const value = sessionStorage.getItem(key);
+            
+            if (key.includes('token') || key.includes('auth') || key.includes('oidc')) {
+              console.log('Znaleziono klucz: ' + key);
+              
+              try {
+                const parsed = JSON.parse(value);
+                if (parsed.refresh_token) {
+                  console.log('Znaleziono refresh_token w: ' + key);
+                  return parsed.refresh_token;
+                }
+              } catch (e) {}
+            }
+          }
+          return null;
+        });
+        
+        if (storageToken) {
+          refreshToken = storageToken;
+          console.log('Znaleziono refresh_token w sessionStorage!');
+        }
+      } catch (e) {
+        console.log('Nie mozna odczytac sessionStorage: ' + e.message);
+      }
+    }
+    
+    // Sprawdzenie cookies
+    if (!refreshToken) {
+      console.log('Sprawdzanie cookies...');
+      const cookies = await page.cookies();
+      cookies.forEach(c => {
+        if (c.name.includes('token') || c.name.includes('auth')) {
+          console.log('Znaleziono cookie: ' + c.name + ' = ' + c.value.substring(0, 50) + '...');
+          if (c.value.includes('eyJ')) {
+            refreshToken = c.value;
+          }
+        }
+      });
+    }
+    
+    // Ostatnia szansa - czekaj na /token response
+    if (!refreshToken) {
+      console.log('Czekanie na refresh_token z network response (max 15 sekund)...');
+      let waited = 0;
+      while (!refreshToken && waited < 15000) {
+        await new Promise(resolve => setTimeout(resolve, 1000));
+        waited += 1000;
+        process.stdout.write('.');
+      }
+      console.log('');
+    }
     
     if (!refreshToken) {
       throw new Error('Nie udalo sie pobrac refresh_token');
     }
     
     console.log('Token pobrany pomyslnie!');
-    console.log(`Token (pierwsze 50 znakow): ${refreshToken.substring(0, 50)}...`);
+    console.log('Token (pierwsze 50 znakow): ' + refreshToken.substring(0, 50) + '...');
     
     // Wyślij do Google Sheets
     if (GOOGLE_SHEETS_WEBHOOK) {
