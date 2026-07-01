@@ -2,10 +2,8 @@ name: Refresh Energa Token
 
 on:
   schedule:
-    # Co poniedziałek o 2:00 AM
     - cron: '0 2 * * 1'
   
-  # Pozwala ręczne uruchomienie z GitHub UI
   workflow_dispatch:
 
 jobs:
@@ -21,7 +19,7 @@ jobs:
         with:
           node-version: '18'
       
-        - name: Install dependencies
+      - name: Install dependencies
         run: |
           npm cache clean --force
           npm install
@@ -31,9 +29,4 @@ jobs:
           ENERGA_EMAIL: ${{ secrets.ENERGA_EMAIL }}
           ENERGA_PASSWORD: ${{ secrets.ENERGA_PASSWORD }}
           GOOGLE_SHEETS_WEBHOOK: ${{ secrets.GOOGLE_SHEETS_WEBHOOK }}
-          TWO_CAPTCHA_API_KEY: ${{ secrets.TWO_CAPTCHA_API_KEY }}
         run: npm run refresh
-      
-      - name: Log result
-        if: always()
-        run: echo "Token refresh completed"
