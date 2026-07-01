@@ -122,11 +122,42 @@ async function getRefreshToken() {
     
     // Czekaj na formularz
     console.log('⏳ Czekanie na formularz...');
-    await page.waitForSelector('input[type="email"]', { timeout: 10000 });
     
-    // Wpisz email
+    // Spróbuj różne selektory
+    const emailSelectors = [
+      'input[type="email"]',
+      'input[name="email"]',
+      'input[id*="email"]',
+      'input[placeholder*="email"]',
+      'input[placeholder*="Email"]',
+      '#email',
+      'input[type="text"]'
+    ];
+    
+    let emailFound = false;
+    for (const selector of emailSelectors) {
+      try {
+        await page.waitForSelector(selector, { timeout: 3000 });
+        emailFound = true;
+        console.log(`✅ Znaleziono pole email: ${selector}`);
+        break;
+      } catch (e) {
+        // Spróbuj następny
+      }
+    }
+    
+    if (!emailFound) {
+      // Weź screenshot dla debugowania
+      await page.screenshot({ path: 'debug-email.png' });
+      throw new Error('❌ Nie znaleziono pola email - screenshot zapisany do debug-email.png');
+    }
+    
+      // Wpisz email
     console.log('📝 Wpisywanie emaila...');
-    await page.type('input[type="email"]', ENERGA_EMAIL);
+    const emailInput = await page.$(emailSelectors[0]);
+    if (emailInput) {
+      await emailInput.type(ENERGA_EMAIL);
+    }
     
     // Wpisz hasło
     console.log('📝 Wpisywanie hasła...');
