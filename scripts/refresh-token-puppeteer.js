@@ -95,15 +95,22 @@ async function getRefreshToken() {
     const page = await browser.newPage();
     await page.setViewport({ width: 1280, height: 720 });
     
-    // Monitoruj responses
-    page.on('response', async (response) => {
+    // Intercept WSZYSTKIE requesty (fetch + XHR)
+    await page.on('response', async (response) => {
       try {
         const url = response.url();
-        if (url.includes('/token') && response.status() === 200) {
-          const data = await response.json();
-          if (data.refresh_token) {
-            refreshToken = data.refresh_token;
-            console.log('✅ Znaleziono refresh_token!');
+        console.log(`🔍 Response: ${url.substring(0, 80)}...`);
+        
+        if ((url.includes('/token') || url.includes('openid-connect')) && response.status() === 200) {
+          try {
+            const data = await response.json();
+            console.log('📦 Response body:', JSON.stringify(data).substring(0, 100));
+            if (data.refresh_token) {
+              refreshToken = data.refresh_token;
+              console.log('✅ Znaleziono refresh_token!');
+            }
+          } catch (e) {
+            // Text response
           }
         }
       } catch (e) {
@@ -265,7 +272,6 @@ async function getRefreshToken() {
     console.log('🔐 Klikanie przycisku logowania...');
     const submitSelectors = [
       'button[type="submit"]',
-      'button:contains("Zaloguj")',
       'button'
     ];
     
@@ -278,9 +284,15 @@ async function getRefreshToken() {
         ]);
         submitted = true;
         console.log('✅ Login kliknięty');
+        
+        // Screenshot po zalogowaniu
+        await page.waitForTimeout(2000);
+        await page.screenshot({ path: '/tmp/debug-after-login.png' });
+        console.log('📸 Screenshot po logowaniu zapisany');
+        
         break;
       } catch (e) {
-        // Spróbuj następny
+        console.error('Błąd submita:', e.message);
       }
     }
     
