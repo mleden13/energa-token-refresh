@@ -344,4 +344,10 @@ async function sendToGoogleSheets(refreshToken) {
 // Uruchom
 getRefreshToken()
   .then(token => {
-    console.log('🎉
+    console.log('Sukces!');
+    process.exit(0);
+  })
+  .catch(error => {
+    console.error('Blad:', error.message);
+    process.exit(1);
+  });
