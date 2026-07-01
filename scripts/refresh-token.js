@@ -1,4 +1,3 @@
-const puppeteer = require('puppeteer');
 const axios = require('axios');
 
 const ENERGA_EMAIL = process.env.ENERGA_EMAIL;
@@ -6,160 +5,59 @@ const ENERGA_PASSWORD = process.env.ENERGA_PASSWORD;
 const GOOGLE_SHEETS_WEBHOOK = process.env.GOOGLE_SHEETS_WEBHOOK;
 
 async function getRefreshToken() {
-  console.log('🚀 Rozpoczynanie logowania do Energi...');
-  
-  let browser;
-  let refreshToken = null;
+  console.log('🚀 Pobieranie refresh_token z Keycloak...');
   
   try {
-    browser = await puppeteer.launch({
-      headless: 'new',
-      args: [
-        '--no-sandbox',
-        '--disable-setuid-sandbox',
-        '--disable-dev-shm-usage'
-      ]
-    });
+    // Krok 1: Pobierz authorization code
+    console.log('📍 Krok 1: Pobieranie authorization code...');
     
-    const page = await browser.newPage();
-    await page.setViewport({ width: 1280, height: 720 });
-    
-    // Monitoruj wszystkie response'y
-    page.on('response', async (response) => {
-      try {
-        const url = response.url();
-        const status = response.status();
-        
-        // Szukaj /token endpoint'a
-        if (url.includes('/token') && status === 200) {
-          console.log(`📡 Znaleziono /token endpoint: ${url}`);
-          
-          try {
-            const data = await response.json();
-            if (data.refresh_token) {
-              refreshToken = data.refresh_token;
-              console.log('✅ Znaleziono refresh_token w response!');
-            }
-          } catch (e) {
-            // Response nie jest JSON, ignoruj
-          }
-        }
-      } catch (e) {
-        // Ignoruj błędy
+    const authResponse = await axios.post(
+      'https://24.energa.pl/auth/realms/Energa-Selfcare/protocol/openid-connect/token',
+      new URLSearchParams({
+        grant_type: 'password',
+        client_id: 'energa-selfcare',
+        username: ENERGA_EMAIL,
+        password: ENERGA_PASSWORD,
+        scope: 'openid'
+      }),
+      {
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded'
+        },
+        timeout: 10000
       }
-    });
+    );
     
-    // Przejdź na Energa
-    console.log('📍 Otwieranie 24.energa.pl...');
-    await page.goto('https://24.energa.pl/', { waitUntil: 'networkidle2', timeout: 30000 });
+    const tokens = authResponse.data;
     
-    // Czekaj na formularz logowania
-    console.log('⏳ Czekanie na formularz...');
-    try {
-      await page.waitForSelector('input[type="email"], input[name="username"], input[id*="email"]', { timeout: 10000 });
-    } catch (e) {
-      console.log('⚠️ Nie znaleziono pola email, próbuję alternatywnie...');
+    if (!tokens.refresh_token) {
+      throw new Error('❌ Brak refresh_token w response');
     }
     
-    // Wpisz email
-    console.log('📝 Wpisywanie emaila...');
-    const emailSelectors = ['input[type="email"]', 'input[name="username"]', 'input[id*="email"]'];
-    let emailFound = false;
-    for (const selector of emailSelectors) {
-      try {
-        await page.type(selector, ENERGA_EMAIL);
-        emailFound = true;
-        break;
-      } catch (e) {
-        // Spróbuj następny selector
-      }
-    }
+    console.log('✅ Znaleziono refresh_token!');
+    console.log(`🔑 Token (pierwsze 50 znaków): ${tokens.refresh_token.substring(0, 50)}...`);
     
-    if (!emailFound) {
-      throw new Error('❌ Nie znaleziono pola email');
-    }
-    
-    // Czekaj na password field
-    console.log('⏳ Czekanie na pole hasła...');
-    const passwordSelectors = ['input[type="password"]', 'input[name="password"]'];
-    let passwordFound = false;
-    for (const selector of passwordSelectors) {
-      try {
-        await page.waitForSelector(selector, { timeout: 5000 });
-        await page.type(selector, ENERGA_PASSWORD);
-        passwordFound = true;
-        break;
-      } catch (e) {
-        // Spróbuj następny selector
-      }
-    }
-    
-    if (!passwordFound) {
-      throw new Error('❌ Nie znaleziono pola hasła');
-    }
-    
-    // Kliknij login
-    console.log('🔐 Klikanie przycisku logowania...');
-    const submitSelectors = ['button[type="submit"]', 'button:has-text("Zaloguj")', 'button'];
-    let submitted = false;
-    for (const selector of submitSelectors) {
-      try {
-        await Promise.all([
-          page.click(selector),
-          page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 30000 }).catch(() => {})
-        ]);
-        submitted = true;
-        break;
-      } catch (e) {
-        // Spróbuj następny selector
-      }
-    }
-    
-    if (!submitted) {
-      console.log('⚠️ Nie znaleziono przycisku, próbuję czekać na token...');
-    }
-    
-    // Czekaj na token
-    console.log('⏳ Czekanie na refresh_token (max 15 sekund)...');
-    let waited = 0;
-    while (!refreshToken && waited < 15000) {
-      await new Promise(resolve => setTimeout(resolve, 1000));
-      waited += 1000;
-    }
-    
-    if (!refreshToken) {
-      // Spróbuj pobrać z cookies
-      console.log('🍪 Próbuję pobrać z cookies...');
-      const cookies = await page.cookies();
-      const tokenCookie = cookies.find(c => c.name.includes('token') || c.name.includes('refresh'));
-      if (tokenCookie) {
-        console.log(`🍪 Znaleziono cookie: ${tokenCookie.name}`);
-      }
-      
-      throw new Error('❌ Nie udało się pobrać refresh_token - sprawdź czy email/hasło są prawidłowe');
-    }
-    
-    console.log('✅ Token pobrany pomyślnie!');
-    console.log(`🔑 Token (pierwsze 50 znaków): ${refreshToken.substring(0, 50)}...`);
-    
-    // Wyślij do Google Sheets
+    // Wyślij do Google Sheets jeśli webhook istnieje
     if (GOOGLE_SHEETS_WEBHOOK) {
-      await sendToGoogleSheets(refreshToken);
+      await sendToGoogleSheets(tokens.refresh_token);
     } else {
-      console.log('⚠️ GOOGLE_SHEETS_WEBHOOK nie ustawiony - token nie zostanie wysłany');
-      console.log(`✅ Refresh Token: ${refreshToken}`);
+      console.log('💡 GOOGLE_SHEETS_WEBHOOK nie ustawiony');
+      console.log(`✅ Refresh Token:\n${tokens.refresh_token}`);
     }
     
-    return refreshToken;
+    return tokens.refresh_token;
     
   } catch (error) {
-    console.error('❌ Błąd:', error.message);
-    throw error;
-  } finally {
-    if (browser) {
-      await browser.close();
-      console.log('🔒 Przeglądarka zamknięta');
+    if (error.response?.status === 401) {
+      console.error('❌ Email lub hasło nieprawidłowe (401)');
+      console.error('Sprawdź ENERGA_EMAIL i ENERGA_PASSWORD w GitHub Secrets');
+    } else if (error.response?.data?.error) {
+      console.error('❌ Błąd Keycloak:', error.response.data.error);
+      console.error('Szczegóły:', error.response.data.error_description);
+    } else {
+      console.error('❌ Błąd:', error.message);
     }
+    throw error;
   }
 }
 
@@ -178,7 +76,6 @@ async function sendToGoogleSheets(refreshToken) {
     return response.data;
   } catch (error) {
     console.error('❌ Błąd wysyłania:', error.message);
-    console.log('💡 Możliwe że webhook URL jest nieprawidłowy');
     throw error;
   }
 }
