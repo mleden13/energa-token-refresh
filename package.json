@@ -6,7 +6,7 @@
     "refresh": "node scripts/refresh-token.js"
   },
   "dependencies": {
-    puppeteer": "^24.15.0,
+    "puppeteer": "^24.15.0",
     "axios": "^1.6.0"
   }
 }
