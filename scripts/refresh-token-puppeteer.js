@@ -244,68 +244,75 @@ async function getRefreshToken() {
     console.log('Czekanie na zaladowanie dashboard...');
     await new Promise(resolve => setTimeout(resolve, 3000));
     
-    // Sprawdzenie localStorage
-    console.log('Sprawdzanie localStorage...');
-    try {
-      const storageToken = await page.evaluate(() => {
-        // Wydrukuj wszystkie klucze
-        const keys = [];
-        for (let i = 0; i < localStorage.length; i++) {
-          keys.push(localStorage.key(i));
-        }
-        console.log('Klucze localStorage: ' + keys.join(', '));
-        
-        // Szukaj tokenu
-        for (let i = 0; i < localStorage.length; i++) {
-          const key = localStorage.key(i);
-          const value = localStorage.getItem(key);
-          
-          if (key.includes('token') || key.includes('auth') || key.includes('oidc') || key.includes('keycloak')) {
-            console.log('Znaleziono klucz: ' + key);
-            
-            try {
-              const parsed = JSON.parse(value);
-              if (parsed.refresh_token) {
-                console.log('Znaleziono refresh_token w: ' + key);
-                return parsed.refresh_token;
-              }
-            } catch (e) {
-              // Sprawdź czy sam token jest stringiem
-              if (typeof value === 'string' && value.includes('eyJ')) {
-                console.log('Znaleziono JWT w: ' + key);
-              }
-            }
-          }
-        }
-        return null;
-      });
+    // Wydrukuj WSZYSTKIE cookies
+    console.log('Sprawdzanie wszystkich cookies...');
+    const allCookies = await page.cookies();
+    console.log('Wszystkie cookies:');
+    allCookies.forEach(c => {
+      console.log(`  ${c.name} = ${c.value.substring(0, 80)}...`);
+    });
+    
+    // Szukaj kcToken lub refresh_token w cookies
+    const kcToken = allCookies.find(c => c.name === 'kcToken' || c.name === 'kc_token');
+    const refreshCookie = allCookies.find(c => c.name.includes('refresh'));
+    
+    if (kcToken) {
+      console.log('Znaleziono kcToken!');
+      console.log('kcToken: ' + kcToken.value.substring(0, 100) + '...');
       
-      if (storageToken) {
-        refreshToken = storageToken;
-        console.log('Znaleziono refresh_token w localStorage!');
+      // Jeśli znaleziono refresh token w cookies
+      if (refreshCookie) {
+        refreshToken = refreshCookie.value;
+        console.log('Znaleziono refresh_token w cookies: ' + refreshCookie.name);
+      } else {
+        // Spróbuj wymienić kcToken na refresh_token via API
+        console.log('Wymiana kcToken na refresh_token...');
+        try {
+          const tokenResponse = await axios.post(
+            'https://24.energa.pl/auth/realms/Energa-Selfcare/protocol/openid-connect/token',
+            new URLSearchParams({
+              grant_type: 'refresh_token',
+              client_id: 'energa-selfcare',
+              refresh_token: kcToken.value
+            }),
+            {
+              headers: {
+                'Content-Type': 'application/x-www-form-urlencoded',
+                'Authorization': 'Bearer ' + kcToken.value
+              },
+              timeout: 10000
+            }
+          );
+          
+          if (tokenResponse.data.refresh_token) {
+            refreshToken = tokenResponse.data.refresh_token;
+            console.log('Wymieniono token! Nowy refresh_token: ' + refreshToken.substring(0, 50) + '...');
+          }
+        } catch (e) {
+          console.log('Nie mozna wymienić token - probuję użyć kcToken bezpośrednio');
+          console.log('Błąd: ' + e.message);
+          refreshToken = kcToken.value;
+          console.log('Uzywam kcToken jako refresh_token');
+        }
       }
-    } catch (e) {
-      console.log('Nie mozna odczytac localStorage: ' + e.message);
     }
     
-    // Sprawdzenie sessionStorage
+    // Sprawdzanie localStorage
     if (!refreshToken) {
-      console.log('Sprawdzanie sessionStorage...');
+      console.log('Sprawdzanie localStorage...');
       try {
         const storageToken = await page.evaluate(() => {
-          // Wydrukuj wszystkie klucze
           const keys = [];
-          for (let i = 0; i < sessionStorage.length; i++) {
-            keys.push(sessionStorage.key(i));
+          for (let i = 0; i < localStorage.length; i++) {
+            keys.push(localStorage.key(i));
           }
-          console.log('Klucze sessionStorage: ' + keys.join(', '));
+          console.log('Klucze localStorage: ' + keys.join(', '));
           
-          // Szukaj tokenu
-          for (let i = 0; i < sessionStorage.length; i++) {
-            const key = sessionStorage.key(i);
-            const value = sessionStorage.getItem(key);
+          for (let i = 0; i < localStorage.length; i++) {
+            const key = localStorage.key(i);
+            const value = localStorage.getItem(key);
             
-            if (key.includes('token') || key.includes('auth') || key.includes('oidc')) {
+            if (key.includes('token') || key.includes('auth') || key.includes('oidc') || key.includes('keycloak')) {
               console.log('Znaleziono klucz: ' + key);
               
               try {
@@ -322,25 +329,11 @@ async function getRefreshToken() {
         
         if (storageToken) {
           refreshToken = storageToken;
-          console.log('Znaleziono refresh_token w sessionStorage!');
+          console.log('Znaleziono refresh_token w localStorage!');
         }
       } catch (e) {
-        console.log('Nie mozna odczytac sessionStorage: ' + e.message);
+        console.log('Nie mozna odczytac localStorage: ' + e.message);
       }
-    }
-    
-    // Sprawdzenie cookies
-    if (!refreshToken) {
-      console.log('Sprawdzanie cookies...');
-      const cookies = await page.cookies();
-      cookies.forEach(c => {
-        if (c.name.includes('token') || c.name.includes('auth')) {
-          console.log('Znaleziono cookie: ' + c.name + ' = ' + c.value.substring(0, 50) + '...');
-          if (c.value.includes('eyJ')) {
-            refreshToken = c.value;
-          }
-        }
-      });
     }
     
     // Ostatnia szansa - czekaj na /token response
