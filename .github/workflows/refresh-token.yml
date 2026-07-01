@@ -1,4 +1,4 @@
-name: Refresh Energa Token
+name: Refresh Energa Token 
 
 on:
   schedule:
