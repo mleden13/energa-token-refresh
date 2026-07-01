@@ -123,7 +123,7 @@ async function getRefreshToken() {
     console.log('⏳ Czekanie na refresh_token (max 15 sekund)...');
     let waited = 0;
     while (!refreshToken && waited < 15000) {
-      await page.waitForTimeout(1000);
+      await new Promise(resolve => setTimeout(resolve, 1000));
       waited += 1000;
     }
     
