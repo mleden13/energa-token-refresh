@@ -6,7 +6,6 @@
   },
   "dependencies": {
     "puppeteer": "^24.15.0",
-    "axios": "^1.6.0",
-    "2captcha-nodejs": "^1.7.0"
+    "axios": "^1.6.0"
   }
 }
