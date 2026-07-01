@@ -2,7 +2,7 @@
   "name": "energa-token-refresh",
   "version": "1.0.0",
   "scripts": {
-    "refresh": "node scripts/refresh-token.js"
+    "refresh": "node scripts/refresh-token-puppeteer.js"
   },
   "dependencies": {
     "puppeteer": "^24.15.0",
