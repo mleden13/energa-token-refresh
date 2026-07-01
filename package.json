@@ -1,12 +1,13 @@
 {
   "name": "energa-token-refresh",
   "version": "1.0.0",
-  "description": "Auto-refresh Energa token",
+  "description": "Auto-refresh Energa token with Puppeteer + 2Captcha",
   "scripts": {
     "refresh": "node scripts/refresh-token.js"
   },
   "dependencies": {
     "puppeteer": "^24.15.0",
-    "axios": "^1.6.0"
+    "axios": "^1.6.0",
+    "2captcha-typescript": "^1.0.0"
   }
 }
