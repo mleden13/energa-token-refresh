@@ -1,7 +1,5 @@
 const puppeteer = require('puppeteer');
 const axios = require('axios');
-const fs = require('fs');
-const path = require('path');
 
 const ENERGA_EMAIL = process.env.ENERGA_EMAIL;
 const ENERGA_PASSWORD = process.env.ENERGA_PASSWORD;
@@ -12,7 +10,6 @@ async function solveCaptchaWith2Captcha(sitekey, pageUrl) {
   console.log('🔐 Wysyłam CAPTCHA do 2Captcha...');
   
   try {
-    // Krok 1: Wyślij CAPTCHA
     const uploadResponse = await axios.post(
       'http://2captcha.com/in.php',
       {
@@ -35,7 +32,6 @@ async function solveCaptchaWith2Captcha(sitekey, pageUrl) {
     const captchaId = uploadResponse.data.captcha;
     console.log(`📤 CAPTCHA wysłana (ID: ${captchaId})`);
     
-    // Krok 2: Czekaj na rozwiązanie
     console.log('⏳ Czekanie na rozwiązanie (max 60 sekund)...');
     
     let solution = null;
@@ -62,7 +58,6 @@ async function solveCaptchaWith2Captcha(sitekey, pageUrl) {
         solution = resultResponse.data.request;
         console.log('✅ CAPTCHA rozwiązana!');
       } else if (resultResponse.data.status === 0) {
-        // Jeszcze nie gotowe
         process.stdout.write('.');
       } else {
         throw new Error(`Błąd: ${resultResponse.data.error}`);
@@ -121,48 +116,105 @@ async function getRefreshToken() {
     await page.goto('https://24.energa.pl/', { waitUntil: 'networkidle2', timeout: 30000 });
     
     // Czekaj na formularz
-    console.log('⏳ Czekanie na formularz...');
+    console.log('⏳ Czekanie na formularz (max 20 sekund)...');
+    
+    try {
+      // Czekaj aż coś się załaduje
+      await page.waitForFunction(() => {
+        return document.body.innerText.length > 100;
+      }, { timeout: 20000 });
+      
+      console.log('📄 Strona załadowana');
+      
+      // Weź screenshot
+      await page.screenshot({ path: '/tmp/debug-form.png' });
+      console.log('📸 Screenshot zapisany');
+      
+      // Wydrukuj wszystkie pola input
+      const inputs = await page.evaluate(() => {
+        return Array.from(document.querySelectorAll('input')).map(i => ({
+          type: i.type,
+          name: i.name,
+          id: i.id,
+          placeholder: i.placeholder
+        }));
+      });
+      
+      console.log('📋 Znalezione pola input:');
+      console.log(JSON.stringify(inputs, null, 2));
+      
+    } catch (e) {
+      console.error('❌ Timeout czekania na formularz');
+      await page.screenshot({ path: '/tmp/debug-timeout.png' });
+      throw new Error('Formularz się nie załadował');
+    }
     
     // Spróbuj różne selektory
     const emailSelectors = [
       'input[type="email"]',
       'input[name="email"]',
+      'input[name*="email"]',
       'input[id*="email"]',
       'input[placeholder*="email"]',
       'input[placeholder*="Email"]',
-      '#email',
       'input[type="text"]'
     ];
     
-    let emailFound = false;
+    let emailInput = null;
+    let emailSelector = null;
+    
     for (const selector of emailSelectors) {
       try {
-        await page.waitForSelector(selector, { timeout: 3000 });
-        emailFound = true;
-        console.log(`✅ Znaleziono pole email: ${selector}`);
-        break;
+        const element = await page.$(selector);
+        if (element) {
+          emailInput = element;
+          emailSelector = selector;
+          console.log(`✅ Znaleziono email: ${selector}`);
+          break;
+        }
       } catch (e) {
         // Spróbuj następny
       }
     }
     
-    if (!emailFound) {
-      // Weź screenshot dla debugowania
-      await page.screenshot({ path: 'debug-email.png' });
-      throw new Error('❌ Nie znaleziono pola email - screenshot zapisany do debug-email.png');
+    if (!emailInput) {
+      throw new Error('❌ Nie znaleziono żadnego pola email');
     }
     
-      // Wpisz email
+    // Wpisz email
     console.log('📝 Wpisywanie emaila...');
-    const emailInput = await page.$(emailSelectors[0]);
-    if (emailInput) {
-      await emailInput.type(ENERGA_EMAIL);
+    await emailInput.type(ENERGA_EMAIL, { delay: 100 });
+    
+    // Czekaj na password field
+    console.log('⏳ Czekanie na pole hasła...');
+    const passwordSelectors = [
+      'input[type="password"]',
+      'input[name="password"]',
+      'input[name*="password"]'
+    ];
+    
+    let passwordInput = null;
+    
+    for (const selector of passwordSelectors) {
+      try {
+        const element = await page.$(selector);
+        if (element) {
+          passwordInput = element;
+          console.log(`✅ Znaleziono password: ${selector}`);
+          break;
+        }
+      } catch (e) {
+        // Spróbuj następny
+      }
+    }
+    
+    if (!passwordInput) {
+      throw new Error('❌ Nie znaleziono pola hasła');
     }
     
     // Wpisz hasło
     console.log('📝 Wpisywanie hasła...');
-    await page.waitForSelector('input[type="password"]', { timeout: 5000 });
-    await page.type('input[type="password"]', ENERGA_PASSWORD);
+    await passwordInput.type(ENERGA_PASSWORD, { delay: 100 });
     
     // Sprawdź reCAPTCHA
     console.log('🔍 Szukanie reCAPTCHA...');
@@ -211,10 +263,30 @@ async function getRefreshToken() {
     
     // Kliknij login
     console.log('🔐 Klikanie przycisku logowania...');
-    await Promise.all([
-      page.click('button[type="submit"]'),
-      page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 30000 }).catch(() => {})
-    ]);
+    const submitSelectors = [
+      'button[type="submit"]',
+      'button:contains("Zaloguj")',
+      'button'
+    ];
+    
+    let submitted = false;
+    for (const selector of submitSelectors) {
+      try {
+        await Promise.all([
+          page.click(selector),
+          page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 30000 }).catch(() => {})
+        ]);
+        submitted = true;
+        console.log('✅ Login kliknięty');
+        break;
+      } catch (e) {
+        // Spróbuj następny
+      }
+    }
+    
+    if (!submitted) {
+      console.log('⚠️ Nie znaleziono przycisku logowania');
+    }
     
     // Czekaj na token
     console.log('⏳ Czekanie na refresh_token (max 15 sekund)...');
@@ -222,7 +294,9 @@ async function getRefreshToken() {
     while (!refreshToken && waited < 15000) {
       await new Promise(resolve => setTimeout(resolve, 1000));
       waited += 1000;
+      process.stdout.write('.');
     }
+    console.log('');
     
     if (!refreshToken) {
       throw new Error('❌ Nie udało się pobrać refresh_token');
@@ -270,10 +344,4 @@ async function sendToGoogleSheets(refreshToken) {
 // Uruchom
 getRefreshToken()
   .then(token => {
-    console.log('🎉 Sukces!');
-    process.exit(0);
-  })
-  .catch(error => {
-    console.error('💥 Błąd:', error.message);
-    process.exit(1);
-  });
+    console.log('🎉
