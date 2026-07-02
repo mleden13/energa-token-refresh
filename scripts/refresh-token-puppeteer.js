@@ -206,7 +206,12 @@ async function jednaProba(proxy, numer) {
     await acceptCookies(page); // druga proba na wypadek pozniejszego pojawienia sie
 
     console.log('Wpisywanie emaila...');
-    await (await page.$('#username')).type(ENERGA_EMAIL, { delay: 80 });
+    await (await page.$('#username')).type(ENERGA_EMAIL.trim(), { delay: 80 });
+
+    // Diagnostyka - sprawdz co faktycznie jest w polu (zamaskowane)
+    const emailValCheck1 = await page.evaluate(() => document.querySelector('#username')?.value || '');
+    console.log('Wartosc #username po wpisaniu (dl=' + emailValCheck1.length + '): ' +
+      (emailValCheck1.length > 4 ? emailValCheck1.substring(0,2) + '***' + emailValCheck1.slice(-8) : '(za krotka!)'));
 
     console.log('Klik Energa24 (evaluate, omija overlaye)...');
     await page.waitForSelector('#kc-switch-button', { timeout: 8000 });
@@ -261,6 +266,24 @@ async function jednaProba(proxy, numer) {
     } else { console.log('Brak reCAPTCHA'); }
 
     console.log('Wysylanie formularza...');
+
+    // ZABEZPIECZENIE: wymus poprawna wartosc emaila z pelnymi eventami
+    // (input/change/blur) na wypadek gdyby JS strony nie zarejestrowal
+    // wpisanej wartosci przy przejsciu do kroku 2 (brak naturalnego blur).
+    const emailValCheck2 = await page.evaluate((email) => {
+      const el = document.querySelector('#username');
+      if (!el) return 'BRAK-POLA';
+      if (el.value !== email) {
+        el.value = email;
+        el.dispatchEvent(new Event('input', { bubbles: true }));
+        el.dispatchEvent(new Event('change', { bubbles: true }));
+        el.dispatchEvent(new Event('blur', { bubbles: true }));
+      }
+      return el.value;
+    }, ENERGA_EMAIL.trim());
+    console.log('Wartosc #username tuz przed submitem (dl=' + emailValCheck2.length + '): ' +
+      (emailValCheck2.length > 4 ? emailValCheck2.substring(0,2) + '***' + emailValCheck2.slice(-8) : emailValCheck2));
+
     await dumpButtons(page);
 
     // Realny ruch myszy przed kliknieciem - niektore zabezpieczenia
