@@ -8,7 +8,7 @@ const ENERGA_EMAIL = process.env.ENERGA_EMAIL;
 const ENERGA_PASSWORD = process.env.ENERGA_PASSWORD;
 const GOOGLE_SHEETS_WEBHOOK = process.env.GOOGLE_SHEETS_WEBHOOK;
 const TWO_CAPTCHA_API_KEY = process.env.TWO_CAPTCHA_API_KEY;
-const PROXY_URL = process.env.PROXY_URL; // format: http://login:haslo@host:port
+const PROXY_URL = process.env.PROXY_URL;
 
 function parseProxy(proxyUrl) {
   if (!proxyUrl) return null;
@@ -30,30 +30,40 @@ function parseProxy(proxyUrl) {
 async function solveCaptchaWith2Captcha(sitekey, pageUrl) {
   console.log('Rozwiazywanie CAPTCHA...');
   try {
-    const uploadResponse = await axios.post(
-      'http://2captcha.com/in.php',
+    const up = await axios.post('http://2captcha.com/in.php',
       { method: 'userrecaptcha', googlekey: sitekey, pageurl: pageUrl, json: 1 },
-      { params: { apikey: TWO_CAPTCHA_API_KEY } }
-    );
-    if (uploadResponse.data.status !== 0) throw new Error(`Blad wysylania: ${uploadResponse.data.error}`);
-    const captchaId = uploadResponse.data.captcha;
-    console.log(`CAPTCHA wyslana (ID: ${captchaId})`);
-    let solution = null, attempts = 0;
-    while (!solution && attempts < 60) {
-      await new Promise(r => setTimeout(r, 1000));
-      attempts++;
-      const res = await axios.get('http://2captcha.com/res.php', {
-        params: { apikey: TWO_CAPTCHA_API_KEY, action: 'get', id: captchaId, json: 1 }
-      });
-      if (res.data.status === 1) { solution = res.data.request; console.log('CAPTCHA rozwiazana!'); }
+      { params: { apikey: TWO_CAPTCHA_API_KEY } });
+    if (up.data.status !== 0) throw new Error(`Blad wysylania: ${up.data.error}`);
+    const id = up.data.captcha;
+    console.log(`CAPTCHA wyslana (ID: ${id})`);
+    let sol = null, att = 0;
+    while (!sol && att < 60) {
+      await new Promise(r => setTimeout(r, 1000)); att++;
+      const res = await axios.get('http://2captcha.com/res.php',
+        { params: { apikey: TWO_CAPTCHA_API_KEY, action: 'get', id, json: 1 } });
+      if (res.data.status === 1) { sol = res.data.request; console.log('CAPTCHA rozwiazana!'); }
       else if (res.data.status === 0) process.stdout.write('.');
       else throw new Error(`Blad: ${res.data.error}`);
     }
-    if (!solution) throw new Error('Timeout CAPTCHA');
-    return solution;
-  } catch (error) {
-    console.error('Blad 2Captcha:', error.message);
-    throw error;
+    if (!sol) throw new Error('Timeout CAPTCHA');
+    return sol;
+  } catch (e) { console.error('Blad 2Captcha:', e.message); throw e; }
+}
+
+async function dumpPage(page, label) {
+  try {
+    const title = await page.title();
+    const url = page.url();
+    const bodyText = await page.evaluate(() => document.body ? document.body.innerText.substring(0, 500) : '(brak body)');
+    const htmlLen = await page.evaluate(() => document.documentElement.outerHTML.length);
+    console.log(`--- DIAGNOSTYKA [${label}] ---`);
+    console.log('  URL: ' + url);
+    console.log('  Title: ' + title);
+    console.log('  Dlugosc HTML: ' + htmlLen);
+    console.log('  Tekst body (500 znakow): ' + JSON.stringify(bodyText));
+    console.log('--- KONIEC DIAGNOSTYKI ---');
+  } catch (e) {
+    console.log('Nie mozna zdiagnozowac strony: ' + e.message);
   }
 }
 
@@ -82,7 +92,6 @@ async function getRefreshToken() {
     await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36');
     await page.setExtraHTTPHeaders({ 'Accept-Language': 'pl-PL,pl;q=0.9,en;q=0.8' });
 
-    // Verbose listener - loguj KAZDY token endpoint i jego zawartosc
     page.on('response', async (response) => {
       try {
         const url = response.url();
@@ -95,54 +104,62 @@ async function getRefreshToken() {
               refreshToken = data.refresh_token;
               console.log('>>> Znaleziono refresh_token w response! <<<');
             }
-          } catch (e) {
-            console.log('[NET] odpowiedz nie jest JSON');
-          }
+          } catch (e) { console.log('[NET] odpowiedz nie jest JSON'); }
         }
       } catch (e) {}
     });
 
-    // Sprawdz IP jesli proxy
     if (proxy) {
       try {
-        await page.goto('https://api.ipify.org?format=json', { waitUntil: 'domcontentloaded', timeout: 20000 });
+        await page.goto('https://api.ipify.org?format=json', { waitUntil: 'domcontentloaded', timeout: 25000 });
         console.log('IP wychodzace: ' + (await page.evaluate(() => document.body.innerText)));
       } catch (e) { console.log('Nie mozna sprawdzic IP: ' + e.message); }
     }
 
     console.log('Otwieranie 24.energa.pl...');
-    await page.goto('https://24.energa.pl/', { waitUntil: 'networkidle2', timeout: 45000 });
-
-    console.log('Czekanie na formularz...');
     try {
-      await page.waitForFunction(() => document.body.innerText.length > 100, { timeout: 20000 });
-      console.log('Strona zaladowana');
+      await page.goto('https://24.energa.pl/', { waitUntil: 'domcontentloaded', timeout: 60000 });
+      console.log('goto zakonczone (domcontentloaded)');
     } catch (e) {
+      console.log('Blad goto: ' + e.message);
+      await dumpPage(page, 'po bledzie goto');
+      throw new Error('Nie mozna otworzyc strony');
+    }
+
+    // Czekaj na pole username - dluzszy timeout dla wolnego proxy
+    console.log('Czekanie na pole username (max 45 sekund)...');
+    let formLoaded = false;
+    try {
+      await page.waitForSelector('#username', { timeout: 45000 });
+      formLoaded = true;
+      console.log('Pole username znalezione!');
+    } catch (e) {
+      console.log('Nie znaleziono #username w 45s');
+    }
+
+    // Zawsze zrzuc diagnostyke zeby zobaczyc co sie zaladowalo
+    await dumpPage(page, formLoaded ? 'formularz OK' : 'formularz NIE zaladowany');
+
+    if (!formLoaded) {
       throw new Error('Formularz sie nie zaladowal');
     }
 
-    const usernameInput = await page.$('#username');
-    if (!usernameInput) throw new Error('Nie znaleziono pola username');
-
     console.log('Wpisywanie emaila...');
-    await usernameInput.type(ENERGA_EMAIL, { delay: 100 });
+    await (await page.$('#username')).type(ENERGA_EMAIL, { delay: 100 });
 
     console.log('Klikanie przycisku Energa24...');
     try {
-      await page.waitForSelector('#kc-switch-button', { timeout: 5000 });
+      await page.waitForSelector('#kc-switch-button', { timeout: 8000 });
       await page.click('#kc-switch-button');
-      await new Promise(r => setTimeout(r, 2000));
-    } catch (e) {
-      console.error('Blad z przyciskiem Energa24:', e.message);
-    }
+      await new Promise(r => setTimeout(r, 2500));
+    } catch (e) { console.error('Blad z przyciskiem Energa24:', e.message); }
 
     console.log('Czekanie na pole hasla...');
-    await page.waitForSelector('#password', { timeout: 10000 });
+    await page.waitForSelector('#password', { timeout: 15000 });
 
     console.log('Wpisywanie hasla...');
     await (await page.$('#password')).type(ENERGA_PASSWORD, { delay: 100 });
 
-    // reCAPTCHA
     const hasCaptcha = await page.$('iframe[src*="recaptcha"]') !== null;
     if (hasCaptcha) {
       console.log('Znaleziono reCAPTCHA');
@@ -161,32 +178,26 @@ async function getRefreshToken() {
         }, sol);
         console.log('CAPTCHA wkleta');
       }
-    } else {
-      console.log('Brak reCAPTCHA');
-    }
+    } else { console.log('Brak reCAPTCHA'); }
 
     console.log('Wysylanie formularza (Enter)...');
     await Promise.all([
       page.keyboard.press('Enter'),
-      page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 30000 }).catch(() => {})
+      page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 40000 }).catch(() => {})
     ]);
 
     console.log('Czekanie po zalogowaniu...');
-    await new Promise(r => setTimeout(r, 4000));
+    await new Promise(r => setTimeout(r, 5000));
     console.log('URL po zalogowaniu: ' + page.url());
+    await dumpPage(page, 'po zalogowaniu');
 
-    // KLUCZOWE: przeladuj strone zeby wymusic swiezy token exchange
     if (!refreshToken) {
       console.log('Przeladowanie strony (wymuszenie token refresh)...');
-      try {
-        await page.reload({ waitUntil: 'networkidle2', timeout: 45000 });
-      } catch (e) {
-        console.log('Reload timeout, kontynuuje...');
-      }
-      await new Promise(r => setTimeout(r, 3000));
+      try { await page.reload({ waitUntil: 'networkidle2', timeout: 60000 }); }
+      catch (e) { console.log('Reload timeout, kontynuuje...'); }
+      await new Promise(r => setTimeout(r, 4000));
     }
 
-    // Sprawdz localStorage (po reload powinno byc dostepne)
     if (!refreshToken) {
       console.log('Sprawdzanie localStorage...');
       try {
@@ -209,13 +220,11 @@ async function getRefreshToken() {
       } catch (e) { console.log('localStorage niedostepny: ' + e.message); }
     }
 
-    // Ostatnie czekanie na network
     if (!refreshToken) {
       console.log('Czekanie na refresh_token z network (max 20 sekund)...');
       let waited = 0;
       while (!refreshToken && waited < 20000) {
-        await new Promise(r => setTimeout(r, 1000));
-        waited += 1000;
+        await new Promise(r => setTimeout(r, 1000)); waited += 1000;
         process.stdout.write('.');
       }
       console.log('');
@@ -241,16 +250,12 @@ async function sendToGoogleSheets(refreshToken) {
   try {
     console.log('Wysylanie tokenu do Google Sheets...');
     await axios.post(GOOGLE_SHEETS_WEBHOOK, {
-      entry_1: refreshToken,
-      entry_2: new Date().toISOString()
+      entry_1: refreshToken, entry_2: new Date().toISOString()
     }, { timeout: 10000 });
     console.log('Token wyslany do Google Sheets!');
-  } catch (error) {
-    console.error('Blad wysylania:', error.message);
-    throw error;
-  }
+  } catch (e) { console.error('Blad wysylania:', e.message); throw e; }
 }
 
 getRefreshToken()
   .then(() => { console.log('Sukces!'); process.exit(0); })
-  .catch(error => { console.error('Blad:', error.message); process.exit(1); });
+  .catch(e => { console.error('Blad:', e.message); process.exit(1); });
