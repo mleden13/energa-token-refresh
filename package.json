@@ -1,10 +1,11 @@
 {
   "name": "energa-token-refresh",
   "version": "1.0.0",
+  "description": "Auto-refresh Energa and Tomojdom tokens with Puppeteer + 2Captcha",
   "scripts": {
-    "refresh": "node scripts/refresh-token-puppeteer.js"
+    "refresh": "node scripts/refresh-token-puppeteer.js",
+    "refresh-tomojdom": "node scripts/refresh-token-tomojdom.js"
   },
-  "refresh-tomojdom": "node scripts/refresh-token-tomojdom.js"
   "dependencies": {
     "puppeteer": "^24.15.0",
     "puppeteer-extra": "^3.3.6",
