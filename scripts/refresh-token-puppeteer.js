@@ -10,7 +10,7 @@ const GOOGLE_SHEETS_WEBHOOK = process.env.GOOGLE_SHEETS_WEBHOOK;
 const TWO_CAPTCHA_API_KEY = process.env.TWO_CAPTCHA_API_KEY;
 const PROXY_URL = process.env.PROXY_URL;
 
-const MAX_PROBY = 1;
+const MAX_PROBY = 3;
 
 function parseProxy(proxyUrl) {
   if (!proxyUrl) return null;
@@ -69,6 +69,21 @@ async function solveCaptcha(sitekey, pageUrl) {
   return sol;
 }
 
+async function waitVisible(page, selector, timeout) {
+  await page.waitForFunction((sel) => {
+    const el = document.querySelector(sel);
+    return el && (el.offsetWidth > 0 || el.offsetHeight > 0) && getComputedStyle(el).display !== 'none';
+  }, { timeout }, selector);
+}
+
+async function evaluateClick(page, selector) {
+  return await page.evaluate((sel) => {
+    const el = document.querySelector(sel);
+    if (el) { el.click(); return true; }
+    return false;
+  }, selector);
+}
+
 async function dumpButtons(page) {
   try {
     const btns = await page.evaluate(() => {
@@ -90,28 +105,27 @@ async function dumpButtons(page) {
 }
 
 async function clickSubmit(page) {
-  // 1. Standardowy Keycloak submit (input type=submit)
   try {
-    const kc = await page.$('#kc-login');
-    if (kc) { await kc.click(); console.log('Submit: #kc-login'); return; }
-  } catch (e) {}
-  // 2. input[type=submit] / button[type=submit] (prawdziwe przyciski, nie naglowki)
-  for (const sel of ['input[type="submit"]', 'button[type="submit"]']) {
-    try {
-      const b = await page.$(sel);
-      if (b) { await b.click(); console.log('Submit: ' + sel); return; }
-    } catch (e) {}
+    await waitVisible(page, '#kc-login', 8000);
+    const ok = await evaluateClick(page, '#kc-login');
+    if (ok) { console.log('Submit: #kc-login (evaluate click, widoczny)'); return; }
+  } catch (e) {
+    console.log('#kc-login nie stal sie widoczny: ' + e.message);
   }
-  // 3. Enter w polu hasla - natywny submit formularza (to dzialalo wczesniej)
+  // Fallback - wymus submit formularza bezposrednio
   try {
-    await page.focus('#password');
-    await page.keyboard.press('Enter');
-    console.log('Submit: Enter w #password');
-    return;
+    const submitted = await page.evaluate(() => {
+      const btn = document.querySelector('#kc-login');
+      const form = btn ? btn.closest('form') : document.querySelector('form');
+      if (form) { form.requestSubmit ? form.requestSubmit() : form.submit(); return true; }
+      return false;
+    });
+    if (submitted) { console.log('Submit: form.submit() (fallback)'); return; }
   } catch (e) {}
-  // 4. Ostatecznosc
+  // Ostatecznosc
+  await page.focus('#password');
   await page.keyboard.press('Enter');
-  console.log('Submit: Enter (fallback)');
+  console.log('Submit: Enter (ostatecznosc)');
 }
 
 // Jedna proba logowania. Zwraca refresh_token lub null.
@@ -166,18 +180,34 @@ async function jednaProba(proxy, numer) {
     await page.waitForSelector('#username', { timeout: 45000 });
     console.log('Formularz OK');
 
+    // KLUCZOWE: akceptuj cookies OD RAZU, zanim zaczniemy klikac cokolwiek innego.
+    // Baner Cybot potrafi wyskoczyc asynchronicznie i przechwycic kolejne kliki (overlay).
+    console.log('Czekanie na baner cookies (max 4s) i akceptacja...');
+    await new Promise(r => setTimeout(r, 1500));
     await acceptCookies(page);
+    await new Promise(r => setTimeout(r, 500));
+    await acceptCookies(page); // druga proba na wypadek pozniejszego pojawienia sie
 
     console.log('Wpisywanie emaila...');
     await (await page.$('#username')).type(ENERGA_EMAIL, { delay: 80 });
 
-    console.log('Klik Energa24...');
+    console.log('Klik Energa24 (evaluate, omija overlaye)...');
     await page.waitForSelector('#kc-switch-button', { timeout: 8000 });
-    await page.click('#kc-switch-button');
-    await new Promise(r => setTimeout(r, 2500));
+    const switchClicked = await evaluateClick(page, '#kc-switch-button');
+    console.log('kc-switch-button klikniety: ' + switchClicked);
 
-    console.log('Czekanie na #password...');
-    await page.waitForSelector('#password', { timeout: 15000 });
+    console.log('Czekanie az pole hasla stanie sie REALNIE widoczne...');
+    try {
+      await waitVisible(page, '#password', 10000);
+      console.log('Pole hasla widoczne - przejscie do kroku 2 potwierdzone');
+    } catch (e) {
+      console.log('Pole hasla NIE stalo sie widoczne w 10s: ' + e.message);
+      // sprobuj ponownie kliknac switch-button (moze baner cookies znow przeszkodzil)
+      await acceptCookies(page);
+      await evaluateClick(page, '#kc-switch-button');
+      await waitVisible(page, '#password', 10000);
+      console.log('Pole hasla widoczne po ponownej probie');
+    }
 
     await acceptCookies(page);
 
