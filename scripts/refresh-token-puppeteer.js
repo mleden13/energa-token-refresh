@@ -385,19 +385,14 @@ async function main() {
 
   if (GOOGLE_SHEETS_WEBHOOK) {
     try {
-      console.log('Wysylanie do Google Forms...');
-      const params = new URLSearchParams();
-      params.append('entry.100124890', refreshToken);
-      // Jesli masz drugie pole (np. znacznik czasu), dodaj ponizej:
-      // params.append('entry.XXXXXXXXX', new Date().toISOString());
-
-      await axios.post(GOOGLE_SHEETS_WEBHOOK, params.toString(), {
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        timeout: 10000
-      });
-      console.log('Token wyslany do Google Forms!');
+      console.log('Wysylanie do Google Apps Script (Web App)...');
+      await axios.post(GOOGLE_SHEETS_WEBHOOK,
+        { refresh_token: refreshToken },
+        { headers: { 'Content-Type': 'application/json' }, timeout: 30000 }
+      );
+      console.log('Token wyslany do Apps Script!');
     } catch (e) {
-      console.error('Blad wysylania do Sheets: ' + e.message);
+      console.error('Blad wysylania do Apps Script: ' + e.message);
       process.exit(1);
     }
   } else {
