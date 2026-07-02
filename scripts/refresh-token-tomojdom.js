@@ -169,7 +169,8 @@ async function clickButtonByText(page, textRegexSrc, exact) {
 async function jednaProba(login, haslo, proxy, numer, opis) {
   console.log(`\n===== TOMOJDOM PROBA ${numer}/${MAX_PROBY} (${opis}) =====`);
   let browser = null;
-  let foundToken = null;
+  let bestToken = null;
+  let fallbackToken = null;
 
   try {
     const args = ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'];
@@ -191,15 +192,42 @@ async function jednaProba(login, haslo, proxy, numer, opis) {
     });
 
     // Nasluch - szukaj JWT w kazdej odpowiedzi z domeny tomojdom
+    // Priorytet: rozpoznane nazwy pol tokenu > pierwszy JWT znaleziony regexem
+    const KNOWN_TOKEN_KEYS = ['access_token', 'accessToken', 'token', 'jwt', 'authToken', 'auth_token', 'sessionToken', 'id_token'];
+
     page.on('response', async (response) => {
       try {
         const url = response.url();
         if (!url.includes('tomojdom')) return;
         const txt = await response.text();
-        const m = txt.match(JWT_REGEX);
-        if (m) {
-          console.log(`[NET] JWT znaleziony w odpowiedzi: ${url.substring(0, 80)}`);
-          foundToken = m[0];
+        if (!txt) return;
+
+        const isLoginEndpoint = url.includes('/login/') || url.includes('OsLogInPass');
+        if (isLoginEndpoint) {
+          console.log(`[NET] ODPOWIEDZ LOGOWANIA: ${url}`);
+          console.log(`[NET] status=${response.status()}`);
+          console.log(`[NET] PELNA TRESC: ${txt.substring(0, 2000)}`);
+        }
+
+        // Sprobuj sparsowac jako JSON i znalezc rozpoznane pole tokenu
+        try {
+          const json = JSON.parse(txt);
+          for (const key of KNOWN_TOKEN_KEYS) {
+            if (json[key] && typeof json[key] === 'string' && JWT_REGEX.test(json[key])) {
+              console.log(`[NET] Znaleziono token w polu '${key}' (${url.substring(0, 60)})`);
+              bestToken = json[key];
+            }
+          }
+        } catch (e) {
+          // nie JSON - ok, sprobujemy regex ponizej
+        }
+
+        if (!bestToken) {
+          const m = txt.match(JWT_REGEX);
+          if (m) {
+            console.log(`[NET] JWT (regex, fallback) znaleziony w: ${url.substring(0, 80)}`);
+            fallbackToken = m[0];
+          }
         }
       } catch (e) {}
     });
@@ -335,20 +363,29 @@ async function jednaProba(login, haslo, proxy, numer, opis) {
 
     console.log('Czekanie na zalogowanie / token (max 20s)...');
     let waited = 0;
-    while (!foundToken && waited < 20000) {
+    while (!bestToken && !fallbackToken && waited < 20000) {
       await new Promise(r => setTimeout(r, 1000)); waited += 1000;
       process.stdout.write('.');
     }
     console.log('');
 
-    await dumpPage(page, 'po probie logowania');
+    // dumpPage moze sie nie udac jesli strona wlasnie nawigowala - to nie problem
+    try { await dumpPage(page, 'po probie logowania'); } catch (e) {}
 
-    if (!foundToken) {
+    let finalToken = bestToken || fallbackToken;
+
+    if (!finalToken) {
       console.log('Sprawdzanie localStorage/sessionStorage...');
-      foundToken = await findTokenInStorage(page);
+      finalToken = await findTokenInStorage(page);
     }
 
-    return foundToken;
+    if (bestToken) {
+      console.log('Uzyto tokenu z rozpoznanego pola (bestToken)');
+    } else if (fallbackToken) {
+      console.log('UWAGA: uzyto tokenu z regexu-fallback (bestToken nie znaleziony) - to moze byc zly token');
+    }
+
+    return finalToken;
 
   } catch (error) {
     console.log('Proba nieudana: ' + error.message);
