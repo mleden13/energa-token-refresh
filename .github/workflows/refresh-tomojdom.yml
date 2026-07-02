@@ -1,0 +1,9 @@
+- run: npm run refresh-tomojdom
+        env:
+          TOMOJDOM_LOGIN_1: ${{ secrets.TOMOJDOM_LOGIN_1 }}
+          TOMOJDOM_PASSWORD_1: ${{ secrets.TOMOJDOM_PASSWORD_1 }}
+          TOMOJDOM_LOGIN_2: ${{ secrets.TOMOJDOM_LOGIN_2 }}
+          TOMOJDOM_PASSWORD_2: ${{ secrets.TOMOJDOM_PASSWORD_2 }}
+          GOOGLE_SHEETS_WEBHOOK: ${{ secrets.GOOGLE_SHEETS_WEBHOOK }}
+          TWO_CAPTCHA_API_KEY: ${{ secrets.TWO_CAPTCHA_API_KEY }}
+          PROXY_URL: ${{ secrets.PROXY_URL }}
