@@ -385,11 +385,17 @@ async function main() {
 
   if (GOOGLE_SHEETS_WEBHOOK) {
     try {
-      console.log('Wysylanie do Google Sheets...');
-      await axios.post(GOOGLE_SHEETS_WEBHOOK, {
-        entry_1: refreshToken, entry_2: new Date().toISOString()
-      }, { timeout: 10000 });
-      console.log('Token wyslany do Google Sheets!');
+      console.log('Wysylanie do Google Forms...');
+      const params = new URLSearchParams();
+      params.append('entry.100124890', refreshToken);
+      // Jesli masz drugie pole (np. znacznik czasu), dodaj ponizej:
+      // params.append('entry.XXXXXXXXX', new Date().toISOString());
+
+      await axios.post(GOOGLE_SHEETS_WEBHOOK, params.toString(), {
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        timeout: 10000
+      });
+      console.log('Token wyslany do Google Forms!');
     } catch (e) {
       console.error('Blad wysylania do Sheets: ' + e.message);
       process.exit(1);
