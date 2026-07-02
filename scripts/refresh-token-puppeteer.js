@@ -70,24 +70,28 @@ async function solveCaptcha(sitekey, pageUrl) {
 }
 
 async function clickSubmit(page) {
-  const selectors = ['#kc-login', 'input[name="login"]', 'button[type="submit"]', 'input[type="submit"]'];
-  for (const sel of selectors) {
+  // 1. Standardowy Keycloak submit (input type=submit)
+  try {
+    const kc = await page.$('#kc-login');
+    if (kc) { await kc.click(); console.log('Submit: #kc-login'); return; }
+  } catch (e) {}
+  // 2. input[type=submit] / button[type=submit] (prawdziwe przyciski, nie naglowki)
+  for (const sel of ['input[type="submit"]', 'button[type="submit"]']) {
     try {
-      const btn = await page.$(sel);
-      if (btn) { await btn.click(); console.log('Submit: ' + sel); return; }
+      const b = await page.$(sel);
+      if (b) { await b.click(); console.log('Submit: ' + sel); return; }
     } catch (e) {}
   }
+  // 3. Enter w polu hasla - natywny submit formularza (to dzialalo wczesniej)
   try {
-    const ok = await page.evaluate(() => {
-      const b = Array.from(document.querySelectorAll('button, input[type=submit]'))
-        .find(x => /zaloguj/i.test(x.innerText || x.value || ''));
-      if (b) { b.click(); return true; }
-      return false;
-    });
-    if (ok) { console.log('Submit (tekst Zaloguj)'); return; }
+    await page.focus('#password');
+    await page.keyboard.press('Enter');
+    console.log('Submit: Enter w #password');
+    return;
   } catch (e) {}
-  console.log('Brak przycisku submit - Enter');
+  // 4. Ostatecznosc
   await page.keyboard.press('Enter');
+  console.log('Submit: Enter (fallback)');
 }
 
 // Jedna proba logowania. Zwraca refresh_token lub null.
@@ -194,14 +198,28 @@ async function jednaProba(proxy, numer) {
 
     // Potwierdzenie: URL wychodzi z /auth/realms/
     console.log('Czekanie na potwierdzenie logowania...');
+    let loggedIn = false;
     try {
-      await page.waitForFunction(() => !window.location.href.includes('/auth/realms/'), { timeout: 30000 });
+      await page.waitForFunction(() => !window.location.href.includes('/auth/realms/'), { timeout: 15000 });
+      loggedIn = true;
       console.log('LOGOWANIE POTWIERDZONE: ' + page.url());
     } catch (e) {
-      console.log('URL nadal /auth/ - logowanie nieudane w tej probie');
-      const bodyText = await page.evaluate(() => document.body ? document.body.innerText.substring(0, 300) : '');
-      console.log('Tekst strony: ' + JSON.stringify(bodyText));
-      return null; // ta proba nieudana
+      // Druga proba - Enter w polu hasla
+      console.log('Pierwszy submit nie zadzialal, probuje Enter w #password...');
+      try {
+        await page.focus('#password');
+        await page.keyboard.press('Enter');
+      } catch (e2) {}
+      try {
+        await page.waitForFunction(() => !window.location.href.includes('/auth/realms/'), { timeout: 15000 });
+        loggedIn = true;
+        console.log('LOGOWANIE POTWIERDZONE (2 proba): ' + page.url());
+      } catch (e3) {
+        console.log('URL nadal /auth/ - logowanie nieudane w tej probie');
+        const bodyText = await page.evaluate(() => document.body ? document.body.innerText.substring(0, 300) : '');
+        console.log('Tekst strony: ' + JSON.stringify(bodyText));
+        return null;
+      }
     }
 
     // Token pojawia sie tuz po zalogowaniu - czekamy na niego
