@@ -4,6 +4,7 @@
   "scripts": {
     "refresh": "node scripts/refresh-token-puppeteer.js"
   },
+  "refresh-tomojdom": "node scripts/refresh-token-tomojdom.js"
   "dependencies": {
     "puppeteer": "^24.15.0",
     "puppeteer-extra": "^3.3.6",
