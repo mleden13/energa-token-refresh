@@ -84,6 +84,23 @@ async function evaluateClick(page, selector) {
   }, selector);
 }
 
+async function checkLoginError(page) {
+  try {
+    const err = await page.evaluate(() => {
+      const selectors = ['#input-error', '.kc-feedback-text', '.alert-error', '.pf-c-form__helper-text', '.pf-m-error', '[class*="error"]'];
+      for (const sel of selectors) {
+        const el = document.querySelector(sel);
+        if (el && el.innerText && el.innerText.trim().length > 0) {
+          return sel + ': ' + el.innerText.trim().substring(0, 200);
+        }
+      }
+      return null;
+    });
+    if (err) console.log('[ERROR NA STRONIE] ' + err);
+    return err;
+  } catch (e) { return null; }
+}
+
 async function dumpButtons(page) {
   try {
     const btns = await page.evaluate(() => {
@@ -245,7 +262,32 @@ async function jednaProba(proxy, numer) {
 
     console.log('Wysylanie formularza...');
     await dumpButtons(page);
-    await clickSubmit(page);
+
+    // Realny ruch myszy przed kliknieciem - niektore zabezpieczenia
+    // sprawdzaja obecnosc ruchu myszy / trusted eventow przed submitem.
+    try {
+      const box = await page.evaluate(() => {
+        const el = document.querySelector('#kc-login');
+        if (!el) return null;
+        const r = el.getBoundingClientRect();
+        return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
+      });
+      if (box) {
+        await page.mouse.move(box.x - 50, box.y - 20, { steps: 5 });
+        await new Promise(r => setTimeout(r, 200 + Math.random() * 300));
+        await page.mouse.move(box.x, box.y, { steps: 8 });
+        await new Promise(r => setTimeout(r, 150 + Math.random() * 200));
+        await page.mouse.click(box.x, box.y);
+        console.log('Submit: klik myszy po wspolrzednych (trusted) na #kc-login');
+      } else {
+        console.log('Nie znaleziono #kc-login do kliku mysza, uzywam Enter');
+        await page.focus('#password');
+        await page.keyboard.press('Enter');
+      }
+    } catch (e) {
+      console.log('Blad klikniecia mysza: ' + e.message + ' - uzywam Enter');
+      try { await page.focus('#password'); await page.keyboard.press('Enter'); } catch (e2) {}
+    }
 
     // Potwierdzenie: URL wychodzi z /auth/realms/
     console.log('Czekanie na potwierdzenie logowania...');
@@ -255,6 +297,7 @@ async function jednaProba(proxy, numer) {
       loggedIn = true;
       console.log('LOGOWANIE POTWIERDZONE: ' + page.url());
     } catch (e) {
+      await checkLoginError(page);
       // Druga proba - Enter w polu hasla
       console.log('Pierwszy submit nie zadzialal, probuje Enter w #password...');
       try {
@@ -266,6 +309,7 @@ async function jednaProba(proxy, numer) {
         loggedIn = true;
         console.log('LOGOWANIE POTWIERDZONE (2 proba): ' + page.url());
       } catch (e3) {
+        await checkLoginError(page);
         console.log('URL nadal /auth/ - logowanie nieudane w tej probie');
         const bodyText = await page.evaluate(() => document.body ? document.body.innerText.substring(0, 300) : '');
         console.log('Tekst strony: ' + JSON.stringify(bodyText));
