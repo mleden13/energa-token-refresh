@@ -10,7 +10,7 @@ const GOOGLE_SHEETS_WEBHOOK = process.env.GOOGLE_SHEETS_WEBHOOK;
 const TWO_CAPTCHA_API_KEY = process.env.TWO_CAPTCHA_API_KEY;
 const PROXY_URL = process.env.PROXY_URL;
 
-const MAX_PROBY = 3;
+const MAX_PROBY = 1;
 
 function parseProxy(proxyUrl) {
   if (!proxyUrl) return null;
@@ -67,6 +67,26 @@ async function solveCaptcha(sitekey, pageUrl) {
   if (!sol) throw new Error('Timeout CAPTCHA');
   console.log('CAPTCHA rozwiazana!');
   return sol;
+}
+
+async function dumpButtons(page) {
+  try {
+    const btns = await page.evaluate(() => {
+      const els = Array.from(document.querySelectorAll('button, input[type=submit], input[type=button], a[role=button], a.button'));
+      return els.map(e => ({
+        tag: e.tagName,
+        type: e.type || '',
+        id: e.id || '',
+        name: e.name || '',
+        cls: (e.className || '').toString().substring(0, 50),
+        text: (e.innerText || e.value || '').trim().substring(0, 40),
+        vis: !!(e.offsetWidth || e.offsetHeight)
+      }));
+    });
+    console.log('--- PRZYCISKI ---');
+    btns.forEach(b => console.log('  ' + JSON.stringify(b)));
+    console.log('--- KONIEC PRZYCISKOW ---');
+  } catch (e) { console.log('dumpButtons blad: ' + e.message); }
 }
 
 async function clickSubmit(page) {
@@ -194,6 +214,7 @@ async function jednaProba(proxy, numer) {
     } else { console.log('Brak reCAPTCHA'); }
 
     console.log('Wysylanie formularza...');
+    await dumpButtons(page);
     await clickSubmit(page);
 
     // Potwierdzenie: URL wychodzi z /auth/realms/
