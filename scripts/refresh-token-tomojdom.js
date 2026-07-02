@@ -171,6 +171,7 @@ async function jednaProba(login, haslo, proxy, numer, opis) {
   let browser = null;
   let bestToken = null;
   let fallbackToken = null;
+  let apiBase = null;
 
   try {
     const args = ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'];
@@ -209,20 +210,49 @@ async function jednaProba(login, haslo, proxy, numer, opis) {
           console.log(`[NET] PELNA TRESC: ${txt.substring(0, 2000)}`);
         }
 
-        // Sprobuj sparsowac jako JSON i znalezc rozpoznane pole tokenu
-        try {
-          const json = JSON.parse(txt);
+        // Sprobuj sparsowac jako JSON
+        let json = null;
+        try { json = JSON.parse(txt); } catch (e) { /* nie JSON */ }
+
+        if (isLoginEndpoint && Array.isArray(json)) {
+          // Znany ksztalt odpowiedzi logowania Tomojdom/Weles:
+          // [userId, apiBaseUrl, cosInnego, flaga, sesyjnyToken]
+          console.log('[NET] Odpowiedz jest tablica o dlugosci ' + json.length);
+          json.forEach((el, idx) => {
+            const typ = typeof el;
+            const dlugosc = typ === 'string' ? el.length : '-';
+            const prefiks = typ === 'string' ? el.substring(0, 15) : String(el);
+            console.log(`[NET]   [${idx}] typ=${typ} dlugosc=${dlugosc} prefiks="${prefiks}"`);
+          });
+
+          const urlField = json.find(el => typeof el === 'string' && el.startsWith('http'));
+          if (urlField) {
+            apiBase = urlField;
+            console.log('[NET] Wykryto adres API: ' + apiBase);
+          }
+
+          // Token: najdluzszy string ktory NIE jest adresem URL (opaque session token)
+          const stringFields = json.filter(el => typeof el === 'string' && !el.startsWith('http'));
+          if (stringFields.length > 0) {
+            const najdluzszy = stringFields.reduce((a, b) => (b.length > a.length ? b : a));
+            if (najdluzszy.length > 20) {
+              bestToken = najdluzszy;
+              console.log('[NET] Uzyto najdluzszego pola jako token (dlugosc=' + najdluzszy.length + ')');
+            }
+          }
+        }
+
+        // Fallback dla innych ksztaltow odpowiedzi (obiekt z nazwana wlasciwoscia)
+        if (!bestToken && json && !Array.isArray(json)) {
           for (const key of KNOWN_TOKEN_KEYS) {
             if (json[key] && typeof json[key] === 'string' && JWT_REGEX.test(json[key])) {
               console.log(`[NET] Znaleziono token w polu '${key}' (${url.substring(0, 60)})`);
               bestToken = json[key];
             }
           }
-        } catch (e) {
-          // nie JSON - ok, sprobujemy regex ponizej
         }
 
-        if (!bestToken) {
+        if (!bestToken && !fallbackToken) {
           const m = txt.match(JWT_REGEX);
           if (m) {
             console.log(`[NET] JWT (regex, fallback) znaleziony w: ${url.substring(0, 80)}`);
@@ -385,7 +415,7 @@ async function jednaProba(login, haslo, proxy, numer, opis) {
       console.log('UWAGA: uzyto tokenu z regexu-fallback (bestToken nie znaleziony) - to moze byc zly token');
     }
 
-    return finalToken;
+    return { token: finalToken, apiBase: apiBase };
 
   } catch (error) {
     console.log('Proba nieudana: ' + error.message);
@@ -395,7 +425,7 @@ async function jednaProba(login, haslo, proxy, numer, opis) {
   }
 }
 
-async function wyslijDoAppsScript(jwt, login) {
+async function wyslijDoAppsScript(jwt, login, apiBase) {
   if (!GOOGLE_SHEETS_WEBHOOK) {
     console.log('BRAK GOOGLE_SHEETS_WEBHOOK - token nie wyslany');
     console.log('PELNY TOKEN: ' + jwt);
@@ -403,8 +433,10 @@ async function wyslijDoAppsScript(jwt, login) {
   }
   try {
     console.log('Wysylanie JWT Tomojdom (' + login + ') do Apps Script...');
+    const payload = { tomojdom_jwt: jwt, login: login };
+    if (apiBase) payload.tomojdom_api_base = apiBase;
     await axios.post(GOOGLE_SHEETS_WEBHOOK,
-      { tomojdom_jwt: jwt, login: login },
+      payload,
       { headers: { 'Content-Type': 'application/json' }, timeout: 30000 }
     );
     console.log('JWT wyslany do Apps Script!');
@@ -415,23 +447,24 @@ async function wyslijDoAppsScript(jwt, login) {
 
 async function zaloguj_i_wyslij(login, haslo, proxy, opis) {
   console.log(`\n########## KONTO: ${opis} (login: ${login}) ##########`);
-  let token = null;
-  for (let i = 1; i <= MAX_PROBY && !token; i++) {
-    token = await jednaProba(login, haslo, proxy, i, opis);
-    if (!token && i < MAX_PROBY) {
+  let result = null;
+  for (let i = 1; i <= MAX_PROBY && !result; i++) {
+    result = await jednaProba(login, haslo, proxy, i, opis);
+    if (!result && i < MAX_PROBY) {
       console.log('Czekam 5s przed kolejna proba...');
       await new Promise(r => setTimeout(r, 5000));
     }
   }
 
-  if (!token) {
+  if (!result || !result.token) {
     console.error(`Nie udalo sie znalezc JWT dla konta ${login} po ${MAX_PROBY} probach.`);
     return false;
   }
 
   console.log(`=== SUKCES: ${opis} ===`);
-  console.log('JWT (50 znakow): ' + token.substring(0, 50) + '...');
-  await wyslijDoAppsScript(token, login);
+  console.log('Token (50 znakow): ' + result.token.substring(0, 50) + '...');
+  console.log('Adres API: ' + (result.apiBase || '(nie wykryto - zostanie uzyty domyslny w Apps Script)'));
+  await wyslijDoAppsScript(result.token, login, result.apiBase);
   return true;
 }
 
