@@ -142,6 +142,30 @@ async function findTokenInStorage(page) {
   } catch (e) { console.log('findTokenInStorage blad: ' + e.message); return null; }
 }
 
+async function clickButtonByText(page, textRegexSrc, exact) {
+  const box = await page.evaluate((src, exact) => {
+    const regex = new RegExp(src, 'i');
+    const btns = Array.from(document.querySelectorAll('button, input[type=submit]'));
+    const btn = btns.find(b => {
+      const t = (b.innerText || b.value || '').trim();
+      const vis = b.offsetWidth > 0 || b.offsetHeight > 0;
+      if (!vis) return false;
+      return exact ? regex.test(t) && t.length < 30 : regex.test(t);
+    });
+    if (!btn) return null;
+    const r = btn.getBoundingClientRect();
+    return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
+  }, textRegexSrc, !!exact);
+
+  if (!box) return false;
+  await page.mouse.move(box.x - 20, box.y - 10, { steps: 5 });
+  await new Promise(r => setTimeout(r, 150 + Math.random() * 150));
+  await page.mouse.move(box.x, box.y, { steps: 8 });
+  await new Promise(r => setTimeout(r, 150 + Math.random() * 150));
+  await page.mouse.click(box.x, box.y);
+  return true;
+}
+
 async function jednaProba(login, haslo, proxy, numer, opis) {
   console.log(`\n===== TOMOJDOM PROBA ${numer}/${MAX_PROBY} (${opis}) =====`);
   let browser = null;
@@ -157,7 +181,14 @@ async function jednaProba(login, haslo, proxy, numer, opis) {
 
     await page.setViewport({ width: 1280, height: 720 });
     await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36');
-    await page.setExtraHTTPHeaders({ 'Accept-Language': 'pl-PL,pl;q=0.9,en;q=0.8' });
+    await page.setExtraHTTPHeaders({ 'Accept-Language': 'pl-PL,pl;q=0.9' });
+
+    // Wymus polski jezyk przegladarki na poziomie JS (navigator.language),
+    // zeby strona nie przelaczyla sie na EN mimo poprawnego naglowka Accept-Language
+    await page.evaluateOnNewDocument(() => {
+      Object.defineProperty(navigator, 'language', { get: () => 'pl-PL' });
+      Object.defineProperty(navigator, 'languages', { get: () => ['pl-PL', 'pl'] });
+    });
 
     // Nasluch - szukaj JWT w kazdej odpowiedzi z domeny tomojdom
     page.on('response', async (response) => {
@@ -183,6 +214,18 @@ async function jednaProba(login, haslo, proxy, numer, opis) {
     console.log('Otwieranie tomojdom.pl...');
     await page.goto('https://tomojdom.pl/', { waitUntil: 'domcontentloaded', timeout: 60000 });
 
+    // Sprawdz czy nie wyladowalismy na wersji EN (inna struktura formularza)
+    await new Promise(r => setTimeout(r, 1000));
+    if (page.url().includes('/en/')) {
+      console.log('Wylandowano na wersji EN (' + page.url() + ') - wymuszam /pl/...');
+      try {
+        await page.goto('https://tomojdom.pl/pl/', { waitUntil: 'domcontentloaded', timeout: 30000 });
+      } catch (e) {
+        console.log('Przekierowanie na /pl/ nie powiodlo sie: ' + e.message);
+      }
+    }
+    console.log('Aktualny URL: ' + page.url());
+
     // SPA - czekaj az cokolwiek sie wyrenderuje (input lub tresc)
     console.log('Czekanie na render SPA (max 20s)...');
     try {
@@ -199,12 +242,13 @@ async function jednaProba(login, haslo, proxy, numer, opis) {
     await new Promise(r => setTimeout(r, 500));
 
     await dumpPage(page, 'po zaladowaniu');
-    const inputs = await dumpInputs(page);
+    let inputs = await dumpInputs(page);
     await dumpButtons(page);
 
-    // Sprobuj znalezc pola login/haslo (heurystyka - pierwszy text/number, pierwszy password)
-    const userField = inputs.find(i => i.vis && (i.type === 'text' || i.type === 'number' || i.type === 'email' || i.type === 'tel'));
-    const passField = inputs.find(i => i.vis && i.type === 'password');
+    // Formularz jest JEDNOETAPOWY - login i haslo sa razem w jednym formularzu.
+    // Pole loginu ma czesto list="userHints" (datalist), pole hasla type=password.
+    const userField = inputs.find(i => i.type === 'text' || i.type === 'email' || i.type === 'tel');
+    const passField = inputs.find(i => i.type === 'password');
 
     if (!userField || !passField) {
       console.log('NIE ZNALEZIONO pol login/haslo - koniec probki diagnostycznej.');
@@ -213,18 +257,22 @@ async function jednaProba(login, haslo, proxy, numer, opis) {
       return null;
     }
 
-    const userSelector = userField.id ? '#' + userField.id : (userField.name ? `input[name="${userField.name}"]` : 'input[type="' + userField.type + '"]');
-    const passSelector = passField.id ? '#' + passField.id : (passField.name ? `input[name="${passField.name}"]` : 'input[type="password"]');
+    const userSelector = userField.id ? '#' + userField.id
+      : (userField.name ? `input[name="${userField.name}"]`
+      : `input[placeholder="${userField.placeholder}"]`);
+    const passSelector = passField.id ? '#' + passField.id
+      : (passField.name ? `input[name="${passField.name}"]`
+      : 'input[type="password"]');
     console.log('Selektor login: ' + userSelector);
     console.log('Selektor haslo: ' + passSelector);
 
     console.log('Wpisywanie loginu...');
     await (await page.$(userSelector)).type(login, { delay: 80 });
-    await new Promise(r => setTimeout(r, 300));
+    await new Promise(r => setTimeout(r, 400));
 
     console.log('Wpisywanie hasla...');
     await (await page.$(passSelector)).type(haslo, { delay: 80 });
-    await new Promise(r => setTimeout(r, 300));
+    await new Promise(r => setTimeout(r, 400));
 
     // reCAPTCHA
     const hasCaptcha = await page.$('iframe[src*="recaptcha"]') !== null;
@@ -271,28 +319,16 @@ async function jednaProba(login, haslo, proxy, numer, opis) {
         console.log('Nie znaleziono sitekey mimo wykrycia iframe reCAPTCHA');
       }
     } else {
-      console.log('Brak reCAPTCHA na tym etapie');
+      console.log('Brak reCAPTCHA');
     }
 
-    // Znajdz i kliknij submit (klik mysza po wspolrzednych - sprawdzona metoda)
-    console.log('Szukanie przycisku submit...');
-    const submitBox = await page.evaluate(() => {
-      const candidates = Array.from(document.querySelectorAll('button, input[type=submit]'));
-      const btn = candidates.find(b => /zaloguj/i.test(b.innerText || b.value || '') || b.type === 'submit');
-      if (!btn) return null;
-      const r = btn.getBoundingClientRect();
-      return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
-    });
-
-    if (submitBox) {
-      await page.mouse.move(submitBox.x - 30, submitBox.y - 10, { steps: 5 });
-      await new Promise(r => setTimeout(r, 200));
-      await page.mouse.move(submitBox.x, submitBox.y, { steps: 8 });
-      await new Promise(r => setTimeout(r, 200));
-      await page.mouse.click(submitBox.x, submitBox.y);
-      console.log('Klikniety submit (mysz)');
+    // Klik przycisku "Zaloguj hasłem" (PL) / "Login" (EN) - obsluz oba warianty
+    console.log('Szukanie przycisku Zaloguj hasłem / Login...');
+    const loginClicked = await clickButtonByText(page, 'zaloguj has|^login$');
+    if (loginClicked) {
+      console.log('Przycisk logowania klikniety (mysz)');
     } else {
-      console.log('Nie znaleziono submit - probuje Enter w polu hasla');
+      console.log('Nie znaleziono przycisku - probuje Enter w polu hasla');
       await page.focus(passSelector);
       await page.keyboard.press('Enter');
     }
