@@ -1,0 +1,26 @@
+name: Refresh Tomojdom JWT
+
+on:
+  workflow_dispatch:
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - run: npm install
+
+      - run: npm run refresh-tomojdom
+        env:
+          TOMOJDOM_LOGIN_1: ${{ secrets.TOMOJDOM_LOGIN_1 }}
+          TOMOJDOM_PASSWORD_1: ${{ secrets.TOMOJDOM_PASSWORD_1 }}
+          TOMOJDOM_LOGIN_2: ${{ secrets.TOMOJDOM_LOGIN_2 }}
+          TOMOJDOM_PASSWORD_2: ${{ secrets.TOMOJDOM_PASSWORD_2 }}
+          GOOGLE_SHEETS_WEBHOOK: ${{ secrets.GOOGLE_SHEETS_WEBHOOK }}
+          TWO_CAPTCHA_API_KEY: ${{ secrets.TWO_CAPTCHA_API_KEY }}
+          PROXY_URL: ${{ secrets.PROXY_URL }}
