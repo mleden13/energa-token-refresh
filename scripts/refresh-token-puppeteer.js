@@ -10,101 +10,120 @@ const GOOGLE_SHEETS_WEBHOOK = process.env.GOOGLE_SHEETS_WEBHOOK;
 const TWO_CAPTCHA_API_KEY = process.env.TWO_CAPTCHA_API_KEY;
 const PROXY_URL = process.env.PROXY_URL;
 
+const MAX_PROBY = 3;
+
 function parseProxy(proxyUrl) {
   if (!proxyUrl) return null;
   try {
     const url = new URL(proxyUrl);
     return {
       server: `${url.protocol}//${url.hostname}:${url.port}`,
-      host: url.hostname,
-      port: url.port,
+      host: url.hostname, port: url.port,
       username: decodeURIComponent(url.username),
       password: decodeURIComponent(url.password)
     };
-  } catch (e) {
-    console.error('Blad parsowania PROXY_URL:', e.message);
-    return null;
-  }
+  } catch (e) { console.error('Blad parsowania PROXY_URL:', e.message); return null; }
 }
 
-async function solveCaptchaWith2Captcha(sitekey, pageUrl) {
+async function acceptCookies(page) {
+  const selectors = [
+    '#CybotCookiebotDialogBodyLevelButtonLevelOptinAllowAll',
+    '#CybotCookiebotDialogBodyButtonAccept',
+    '#onetrust-accept-btn-handler'
+  ];
+  for (const sel of selectors) {
+    try {
+      const btn = await page.$(sel);
+      if (btn) { await btn.click(); console.log('Cookies OK: ' + sel); await new Promise(r => setTimeout(r, 800)); return; }
+    } catch (e) {}
+  }
+  try {
+    const clicked = await page.evaluate(() => {
+      const btns = Array.from(document.querySelectorAll('button, a'));
+      const t = btns.find(b => /zezw[oó]l na wszystkie|akceptuj|^zgoda$/i.test((b.innerText || '').trim()));
+      if (t) { t.click(); return t.innerText; }
+      return null;
+    });
+    if (clicked) { console.log('Cookies OK (tekst): ' + clicked.trim()); await new Promise(r => setTimeout(r, 800)); }
+  } catch (e) {}
+}
+
+async function solveCaptcha(sitekey, pageUrl) {
   console.log('Rozwiazywanie CAPTCHA...');
-  try {
-    const up = await axios.post('http://2captcha.com/in.php',
-      { method: 'userrecaptcha', googlekey: sitekey, pageurl: pageUrl, json: 1 },
-      { params: { apikey: TWO_CAPTCHA_API_KEY } });
-    if (up.data.status !== 0) throw new Error(`Blad wysylania: ${up.data.error}`);
-    const id = up.data.captcha;
-    console.log(`CAPTCHA wyslana (ID: ${id})`);
-    let sol = null, att = 0;
-    while (!sol && att < 60) {
-      await new Promise(r => setTimeout(r, 1000)); att++;
-      const res = await axios.get('http://2captcha.com/res.php',
-        { params: { apikey: TWO_CAPTCHA_API_KEY, action: 'get', id, json: 1 } });
-      if (res.data.status === 1) { sol = res.data.request; console.log('CAPTCHA rozwiazana!'); }
-      else if (res.data.status === 0) process.stdout.write('.');
-      else throw new Error(`Blad: ${res.data.error}`);
-    }
-    if (!sol) throw new Error('Timeout CAPTCHA');
-    return sol;
-  } catch (e) { console.error('Blad 2Captcha:', e.message); throw e; }
-}
-
-async function dumpPage(page, label) {
-  try {
-    const title = await page.title();
-    const url = page.url();
-    const bodyText = await page.evaluate(() => document.body ? document.body.innerText.substring(0, 500) : '(brak body)');
-    const htmlLen = await page.evaluate(() => document.documentElement.outerHTML.length);
-    console.log(`--- DIAGNOSTYKA [${label}] ---`);
-    console.log('  URL: ' + url);
-    console.log('  Title: ' + title);
-    console.log('  Dlugosc HTML: ' + htmlLen);
-    console.log('  Tekst body (500 znakow): ' + JSON.stringify(bodyText));
-    console.log('--- KONIEC DIAGNOSTYKI ---');
-  } catch (e) {
-    console.log('Nie mozna zdiagnozowac strony: ' + e.message);
+  const up = await axios.post('http://2captcha.com/in.php',
+    { method: 'userrecaptcha', googlekey: sitekey, pageurl: pageUrl, json: 1 },
+    { params: { apikey: TWO_CAPTCHA_API_KEY } });
+  if (up.data.status !== 0) throw new Error(`2captcha: ${up.data.error}`);
+  const id = up.data.captcha;
+  let sol = null, att = 0;
+  while (!sol && att < 60) {
+    await new Promise(r => setTimeout(r, 1000)); att++;
+    const res = await axios.get('http://2captcha.com/res.php',
+      { params: { apikey: TWO_CAPTCHA_API_KEY, action: 'get', id, json: 1 } });
+    if (res.data.status === 1) sol = res.data.request;
+    else if (res.data.status === 0) process.stdout.write('.');
+    else throw new Error(`2captcha: ${res.data.error}`);
   }
+  if (!sol) throw new Error('Timeout CAPTCHA');
+  console.log('CAPTCHA rozwiazana!');
+  return sol;
 }
 
-async function getRefreshToken() {
-  console.log('Rozpoczynanie logowania do Energi...');
+async function clickSubmit(page) {
+  const selectors = ['#kc-login', 'input[name="login"]', 'button[type="submit"]', 'input[type="submit"]'];
+  for (const sel of selectors) {
+    try {
+      const btn = await page.$(sel);
+      if (btn) { await btn.click(); console.log('Submit: ' + sel); return; }
+    } catch (e) {}
+  }
+  try {
+    const ok = await page.evaluate(() => {
+      const b = Array.from(document.querySelectorAll('button, input[type=submit]'))
+        .find(x => /zaloguj/i.test(x.innerText || x.value || ''));
+      if (b) { b.click(); return true; }
+      return false;
+    });
+    if (ok) { console.log('Submit (tekst Zaloguj)'); return; }
+  } catch (e) {}
+  console.log('Brak przycisku submit - Enter');
+  await page.keyboard.press('Enter');
+}
 
-  const proxy = parseProxy(PROXY_URL);
-  if (proxy) console.log(`Uzywam proxy: ${proxy.host}:${proxy.port}`);
-  else console.log('BRAK PROXY - laczenie bezposrednie');
-
-  let browser;
+// Jedna proba logowania. Zwraca refresh_token lub null.
+async function jednaProba(proxy, numer) {
+  console.log(`\n===== PROBA ${numer}/${MAX_PROBY} =====`);
+  let browser = null;
   let refreshToken = null;
 
   try {
-    const launchArgs = ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'];
-    if (proxy) launchArgs.push(`--proxy-server=${proxy.server}`);
+    const args = ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'];
+    if (proxy) args.push(`--proxy-server=${proxy.server}`);
 
-    browser = await puppeteer.launch({ headless: 'new', args: launchArgs });
+    browser = await puppeteer.launch({ headless: 'new', args });
     const page = await browser.newPage();
-
-    if (proxy && proxy.username) {
-      await page.authenticate({ username: proxy.username, password: proxy.password });
-    }
+    if (proxy && proxy.username) await page.authenticate({ username: proxy.username, password: proxy.password });
 
     await page.setViewport({ width: 1280, height: 720 });
     await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36');
     await page.setExtraHTTPHeaders({ 'Accept-Language': 'pl-PL,pl;q=0.9,en;q=0.8' });
 
+    // Nasluch tokenu (parsujemy przez text() - bezpieczniej)
     page.on('response', async (response) => {
       try {
         const url = response.url();
-        if (url.includes('/token') || url.includes('/protocol/openid-connect/token')) {
-          console.log(`[NET] token endpoint: status=${response.status()}`);
+        if (url.includes('/token')) {
+          const status = response.status();
+          const txt = await response.text();
           try {
-            const data = await response.json();
-            console.log('[NET] klucze odpowiedzi: ' + Object.keys(data).join(', '));
+            const data = JSON.parse(txt);
+            console.log(`[NET] token status=${status} klucze: ${Object.keys(data).join(', ')}`);
             if (data.refresh_token) {
               refreshToken = data.refresh_token;
-              console.log('>>> Znaleziono refresh_token w response! <<<');
+              console.log('>>> Znaleziono refresh_token! <<<');
+              if (data.refresh_expires_in) console.log('    refresh_expires_in: ' + data.refresh_expires_in + 's');
             }
-          } catch (e) { console.log('[NET] odpowiedz nie jest JSON'); }
+          } catch (e) { /* nie JSON */ }
         }
       } catch (e) {}
     });
@@ -113,63 +132,53 @@ async function getRefreshToken() {
       try {
         await page.goto('https://api.ipify.org?format=json', { waitUntil: 'domcontentloaded', timeout: 25000 });
         console.log('IP wychodzace: ' + (await page.evaluate(() => document.body.innerText)));
-      } catch (e) { console.log('Nie mozna sprawdzic IP: ' + e.message); }
+      } catch (e) { console.log('IP check blad: ' + e.message); }
     }
 
     console.log('Otwieranie 24.energa.pl...');
-    try {
-      await page.goto('https://24.energa.pl/', { waitUntil: 'domcontentloaded', timeout: 60000 });
-      console.log('goto zakonczone (domcontentloaded)');
-    } catch (e) {
-      console.log('Blad goto: ' + e.message);
-      await dumpPage(page, 'po bledzie goto');
-      throw new Error('Nie mozna otworzyc strony');
-    }
+    await page.goto('https://24.energa.pl/', { waitUntil: 'domcontentloaded', timeout: 60000 });
 
-    // Czekaj na pole username - dluzszy timeout dla wolnego proxy
-    console.log('Czekanie na pole username (max 45 sekund)...');
-    let formLoaded = false;
-    try {
-      await page.waitForSelector('#username', { timeout: 45000 });
-      formLoaded = true;
-      console.log('Pole username znalezione!');
-    } catch (e) {
-      console.log('Nie znaleziono #username w 45s');
-    }
+    console.log('Czekanie na #username...');
+    await page.waitForSelector('#username', { timeout: 45000 });
+    console.log('Formularz OK');
 
-    // Zawsze zrzuc diagnostyke zeby zobaczyc co sie zaladowalo
-    await dumpPage(page, formLoaded ? 'formularz OK' : 'formularz NIE zaladowany');
-
-    if (!formLoaded) {
-      throw new Error('Formularz sie nie zaladowal');
-    }
+    await acceptCookies(page);
 
     console.log('Wpisywanie emaila...');
-    await (await page.$('#username')).type(ENERGA_EMAIL, { delay: 100 });
+    await (await page.$('#username')).type(ENERGA_EMAIL, { delay: 80 });
 
-    console.log('Klikanie przycisku Energa24...');
-    try {
-      await page.waitForSelector('#kc-switch-button', { timeout: 8000 });
-      await page.click('#kc-switch-button');
-      await new Promise(r => setTimeout(r, 2500));
-    } catch (e) { console.error('Blad z przyciskiem Energa24:', e.message); }
+    console.log('Klik Energa24...');
+    await page.waitForSelector('#kc-switch-button', { timeout: 8000 });
+    await page.click('#kc-switch-button');
+    await new Promise(r => setTimeout(r, 2500));
 
-    console.log('Czekanie na pole hasla...');
+    console.log('Czekanie na #password...');
     await page.waitForSelector('#password', { timeout: 15000 });
 
-    console.log('Wpisywanie hasla...');
-    await (await page.$('#password')).type(ENERGA_PASSWORD, { delay: 100 });
+    await acceptCookies(page);
 
-    const hasCaptcha = await page.$('iframe[src*="recaptcha"]') !== null;
-    if (hasCaptcha) {
-      console.log('Znaleziono reCAPTCHA');
+    console.log('Wpisywanie hasla...');
+    await (await page.$('#password')).type(ENERGA_PASSWORD, { delay: 80 });
+
+    // Zaznacz "zapamietaj mnie" - moze wydluzyc zycie tokenu
+    try {
+      const remember = await page.$('#rememberMe');
+      if (remember) {
+        const checked = await page.evaluate(el => el.checked, remember);
+        if (!checked) { await remember.click(); console.log('Zaznaczono rememberMe'); }
+      }
+    } catch (e) {}
+
+    // reCAPTCHA
+    if (await page.$('iframe[src*="recaptcha"]') !== null) {
+      console.log('reCAPTCHA wykryta');
       const sitekey = await page.evaluate(() => {
         const s = Array.from(document.scripts).find(s => s.textContent.includes('grecaptcha.render'));
         if (s) { const m = s.textContent.match(/sitekey['":\s]+['"]([^'"]+)['"]/); return m ? m[1] : null; }
         return null;
       });
       if (sitekey) {
-        const sol = await solveCaptchaWith2Captcha(sitekey, 'https://24.energa.pl/');
+        const sol = await solveCaptcha(sitekey, 'https://24.energa.pl/');
         await page.evaluate((token) => {
           document.getElementById('g-recaptcha-response').innerHTML = token;
           if (window.___grecaptcha_cfg) {
@@ -180,82 +189,82 @@ async function getRefreshToken() {
       }
     } else { console.log('Brak reCAPTCHA'); }
 
-    console.log('Wysylanie formularza (Enter)...');
-    await Promise.all([
-      page.keyboard.press('Enter'),
-      page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 40000 }).catch(() => {})
-    ]);
+    console.log('Wysylanie formularza...');
+    await clickSubmit(page);
 
-    console.log('Czekanie po zalogowaniu...');
-    await new Promise(r => setTimeout(r, 5000));
-    console.log('URL po zalogowaniu: ' + page.url());
-    await dumpPage(page, 'po zalogowaniu');
-
-    if (!refreshToken) {
-      console.log('Przeladowanie strony (wymuszenie token refresh)...');
-      try { await page.reload({ waitUntil: 'networkidle2', timeout: 60000 }); }
-      catch (e) { console.log('Reload timeout, kontynuuje...'); }
-      await new Promise(r => setTimeout(r, 4000));
+    // Potwierdzenie: URL wychodzi z /auth/realms/
+    console.log('Czekanie na potwierdzenie logowania...');
+    try {
+      await page.waitForFunction(() => !window.location.href.includes('/auth/realms/'), { timeout: 30000 });
+      console.log('LOGOWANIE POTWIERDZONE: ' + page.url());
+    } catch (e) {
+      console.log('URL nadal /auth/ - logowanie nieudane w tej probie');
+      const bodyText = await page.evaluate(() => document.body ? document.body.innerText.substring(0, 300) : '');
+      console.log('Tekst strony: ' + JSON.stringify(bodyText));
+      return null; // ta proba nieudana
     }
 
-    if (!refreshToken) {
-      console.log('Sprawdzanie localStorage...');
-      try {
-        const lsToken = await page.evaluate(() => {
-          const found = {};
-          for (let i = 0; i < localStorage.length; i++) {
-            const key = localStorage.key(i);
-            const val = localStorage.getItem(key);
-            found[key] = (val || '').substring(0, 60);
-            try {
-              const p = JSON.parse(val);
-              if (p && p.refresh_token) return p.refresh_token;
-              if (p && p.refreshToken) return p.refreshToken;
-            } catch (e) {}
-          }
-          console.log('LS keys: ' + JSON.stringify(found));
-          return null;
-        });
-        if (lsToken) { refreshToken = lsToken; console.log('Znaleziono refresh_token w localStorage!'); }
-      } catch (e) { console.log('localStorage niedostepny: ' + e.message); }
+    // Token pojawia sie tuz po zalogowaniu - czekamy na niego
+    console.log('Czekanie na refresh_token z /token (max 25s)...');
+    let waited = 0;
+    while (!refreshToken && waited < 25000) {
+      await new Promise(r => setTimeout(r, 1000)); waited += 1000;
+      process.stdout.write('.');
     }
+    console.log('');
 
-    if (!refreshToken) {
-      console.log('Czekanie na refresh_token z network (max 20 sekund)...');
-      let waited = 0;
-      while (!refreshToken && waited < 20000) {
-        await new Promise(r => setTimeout(r, 1000)); waited += 1000;
-        process.stdout.write('.');
-      }
-      console.log('');
-    }
-
-    if (!refreshToken) throw new Error('Nie udalo sie pobrac refresh_token');
-
-    console.log('Token pobrany pomyslnie!');
-    console.log('Token (pierwsze 50 znakow): ' + refreshToken.substring(0, 50) + '...');
-
-    if (GOOGLE_SHEETS_WEBHOOK) await sendToGoogleSheets(refreshToken);
     return refreshToken;
 
   } catch (error) {
-    console.error('Blad:', error.message);
-    throw error;
+    console.log('Proba nieudana: ' + error.message);
+    return null;
   } finally {
     if (browser) { await browser.close(); console.log('Przegladarka zamknieta'); }
   }
 }
 
-async function sendToGoogleSheets(refreshToken) {
-  try {
-    console.log('Wysylanie tokenu do Google Sheets...');
-    await axios.post(GOOGLE_SHEETS_WEBHOOK, {
-      entry_1: refreshToken, entry_2: new Date().toISOString()
-    }, { timeout: 10000 });
-    console.log('Token wyslany do Google Sheets!');
-  } catch (e) { console.error('Blad wysylania:', e.message); throw e; }
+async function main() {
+  console.log('Start - pobieranie refresh_token z Energi');
+  const proxy = parseProxy(PROXY_URL);
+  if (proxy) console.log(`Proxy: ${proxy.host}:${proxy.port}`);
+  else console.log('BRAK PROXY - laczenie bezposrednie');
+
+  let refreshToken = null;
+
+  for (let i = 1; i <= MAX_PROBY && !refreshToken; i++) {
+    refreshToken = await jednaProba(proxy, i);
+    if (!refreshToken && i < MAX_PROBY) {
+      console.log('Czekam 5s przed kolejna proba (nowe IP)...');
+      await new Promise(r => setTimeout(r, 5000));
+    }
+  }
+
+  if (!refreshToken) {
+    console.error('Blad: Nie udalo sie pobrac refresh_token po ' + MAX_PROBY + ' probach');
+    process.exit(1);
+  }
+
+  console.log('\n=== SUKCES ===');
+  console.log('refresh_token (50 znakow): ' + refreshToken.substring(0, 50) + '...');
+
+  if (GOOGLE_SHEETS_WEBHOOK) {
+    try {
+      console.log('Wysylanie do Google Sheets...');
+      await axios.post(GOOGLE_SHEETS_WEBHOOK, {
+        entry_1: refreshToken, entry_2: new Date().toISOString()
+      }, { timeout: 10000 });
+      console.log('Token wyslany do Google Sheets!');
+    } catch (e) {
+      console.error('Blad wysylania do Sheets: ' + e.message);
+      process.exit(1);
+    }
+  } else {
+    console.log('BRAK GOOGLE_SHEETS_WEBHOOK - token nie wyslany');
+    console.log('PELNY TOKEN: ' + refreshToken);
+  }
+
+  console.log('Gotowe!');
+  process.exit(0);
 }
 
-getRefreshToken()
-  .then(() => { console.log('Sukces!'); process.exit(0); })
-  .catch(e => { console.error('Blad:', e.message); process.exit(1); });
+main();
